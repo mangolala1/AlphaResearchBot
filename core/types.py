@@ -58,6 +58,16 @@ class ExperimentRecord(TypedDict):
     reflection: str
 
 
+class BacktestResult(TypedDict):
+    metrics: BacktestMetrics
+    ic_series: list[float]
+    portfolio_returns: list[float]
+    dates: list[str]
+    sector_ic: dict[str, list[float]]
+    forward_returns: list[float]
+    signal_values: list[list[float]]
+
+
 @dataclass
 class ValidationResult:
     valid: bool

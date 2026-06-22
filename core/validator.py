@@ -8,7 +8,7 @@ from datetime import datetime
 from core.types import AlphaConfig, ValidationResult
 
 ALLOWED_FEATURES: set[str] = {
-    # Raw Snowflake columns
+    # Raw price / fundamental columns
     "EPS_LTM", "EPS_NTM",
     "SALES_LTM", "SALES_NTM",
     "EBITDA_LTM", "EBITDA_NTM",
@@ -18,7 +18,7 @@ ALLOWED_FEATURES: set[str] = {
     # Derived / computed features
     "EBITDA_MARGIN", "MOM12_1", "MOM6_1",
     "SALES_GROWTH", "EPS_GROWTH",
-    "PRICE_TO_SALES", "VOL_20D",
+    "PRICE_TO_SALES", "VOL_20D", "LIQUIDITY",
 }
 
 FUTURE_LOOKING_FIELDS: set[str] = {
@@ -58,7 +58,8 @@ def validate_alpha(alpha: AlphaConfig) -> ValidationResult:
         elif feat in FUTURE_LOOKING_FIELDS:
             warnings.append(
                 f"Feature '{feat}' is an NTM (forward-looking) estimate — "
-                "ensure this is intentional"
+                "these fields are not available in V2 free data sources (no analyst consensus). "
+                "Use LTM variants (EPS_LTM, SALES_LTM, etc.) instead."
             )
 
     # 3. Formula token validation
