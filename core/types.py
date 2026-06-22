@@ -89,3 +89,18 @@ class ResearchSuggestion(TypedDict):
     features: list[str]
     parent_id: str | None
     rationale: str
+
+
+FailureCategory = Literal[
+    "high_turnover", "weak_ic", "negative_sharpe", "high_noise", "poor_robustness"
+]
+
+
+class MemorySummary(TypedDict):
+    total_experiments: int
+    verdict_counts: dict[str, int]
+    failure_category_counts: dict[str, int]
+    best_experiments: list[dict]
+    explored_features: list[str]
+    unexplored_features: list[str]
+    trend_observations: list[str]

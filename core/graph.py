@@ -16,6 +16,8 @@ class ResearchGraph:
 
     def add_experiment(self, record: ExperimentRecord) -> None:
         """Add a single experiment as a node, with an edge from its parent if present."""
+        from core.memory_analyzer import classify_failure  # local import to avoid circular dep
+
         metrics = record.get("metrics", {})
         self._graph.add_node(
             record["alpha_id"],
@@ -29,6 +31,8 @@ class ResearchGraph:
             Sharpe=metrics.get("Sharpe", 0.0),
             ICIR=metrics.get("ICIR", 0.0),
             deflated_sharpe=metrics.get("deflated_sharpe", 0.0),
+            failure_category=classify_failure(record) or "N/A",
+            mutation_reason=record.get("mutation", ""),
         )
         parent_id = record.get("parent_id")
         if parent_id and parent_id in self._graph:

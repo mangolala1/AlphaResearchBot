@@ -63,5 +63,7 @@ def _build_tooltip(attrs: dict) -> str:
         f"<b>Deflated Sharpe:</b> {attrs.get('deflated_sharpe', 0.0):.3f}<br>"
         f"<b>Verdict:</b> {attrs.get('verdict', '')}<br>"
         f"<b>Failure:</b> {attrs.get('failure_reason', 'N/A')}<br>"
+        f"<b>Failure Category:</b> {attrs.get('failure_category', 'N/A')}<br>"
+        f"<b>Mutation Reason:</b> {attrs.get('mutation_reason', '')}<br>"
         f"<b>Reflection:</b> {reflection}"
     )

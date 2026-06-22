@@ -11,7 +11,7 @@ import re
 from datetime import datetime, timezone
 
 from core.types import AlphaConfig
-from core.validator import ALLOWED_FEATURES, validate_alpha
+from core.validator import ALLOWED_FEATURES, ALLOWED_FUNCTION_NAMES, EVALUATOR_FEATURES, validate_alpha
 
 _SYSTEM_PROMPT = (
     "You are a quantitative research analyst designing alpha factors. "
@@ -20,16 +20,15 @@ _SYSTEM_PROMPT = (
     "Be precise and concrete. Only suggest formulas using supported operators."
 )
 
-_FORMULA_CONSTRAINT = (
-    "IMPORTANT — supported formula operators ONLY: rank(), zscore(), log(), abs(), sign() "
-    "and standard arithmetic (+, -, *, /, **). "
-    "DO NOT use ts_mean(), ts_std(), or delta() — they are not implemented."
-)
+_SAFE_OPERATORS: frozenset[str] = ALLOWED_FUNCTION_NAMES - {"delta", "ts_mean", "ts_std"}
+_AVAILABLE_FEATURES = ", ".join(sorted(EVALUATOR_FEATURES))
 
-_AVAILABLE_FEATURES = ", ".join(sorted(ALLOWED_FEATURES - {
-    "SECTOR", "INDUSTRY", "FACTSET_ID",
-    "EPS_NTM", "SALES_NTM", "EBITDA_NTM", "COGS_NTM",
-}))
+_FORMULA_CONSTRAINT = (
+    f"IMPORTANT — supported formula operators ONLY: {', '.join(sorted(_SAFE_OPERATORS))}() "
+    "and standard arithmetic (+, -, *, /, **). "
+    "ts_mean(), ts_std(), delta() raise NotImplementedError — never use them. "
+    f"Only use these features: {_AVAILABLE_FEATURES}."
+)
 
 
 def generate_mutation(
