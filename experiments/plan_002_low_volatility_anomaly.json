@@ -1,0 +1,17 @@
+{
+  "alpha_id": "plan_002_low_volatility_anomaly",
+  "parent_id": null,
+  "hypothesis": "Stocks with lower recent volatility outperform on a risk-adjusted basis, capturing the low-volatility anomaly.",
+  "formula": "rank(-VOL_20D)",
+  "features": [
+    "VOL_20D"
+  ],
+  "mutation": "Planner suggestion: Low volatility anomaly",
+  "universe": "sp500",
+  "start_date": "2018-01-01",
+  "end_date": "2024-12-31",
+  "neutralization": "sector",
+  "rebalance": "monthly",
+  "transaction_cost_bps": 5,
+  "holding_period_days": 20
+}

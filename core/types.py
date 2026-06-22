@@ -73,3 +73,19 @@ class ValidationResult:
     valid: bool
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+
+
+class SimilarityResult(TypedDict):
+    is_unique: bool
+    most_similar_id: str | None
+    similarity_score: float
+    reason: str
+
+
+class ResearchSuggestion(TypedDict):
+    direction: str
+    hypothesis: str
+    formula: str
+    features: list[str]
+    parent_id: str | None
+    rationale: str

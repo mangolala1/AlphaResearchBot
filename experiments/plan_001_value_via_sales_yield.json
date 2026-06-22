@@ -1,0 +1,17 @@
+{
+  "alpha_id": "plan_001_value_via_sales_yield",
+  "parent_id": null,
+  "hypothesis": "Stocks with high sales relative to price (low PRICE_TO_SALES) outperform, providing a value signal orthogonal to momentum and profitability.",
+  "formula": "rank(-PRICE_TO_SALES)",
+  "features": [
+    "PRICE_TO_SALES"
+  ],
+  "mutation": "Planner suggestion: Value via sales yield",
+  "universe": "sp500",
+  "start_date": "2018-01-01",
+  "end_date": "2024-12-31",
+  "neutralization": "sector",
+  "rebalance": "monthly",
+  "transaction_cost_bps": 5,
+  "holding_period_days": 20
+}

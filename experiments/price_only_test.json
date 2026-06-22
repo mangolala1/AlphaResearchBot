@@ -1,0 +1,15 @@
+{
+  "alpha_id": "alpha_price_test",
+  "parent_id": null,
+  "hypothesis": "Stocks with strong 12-month momentum (excluding last month) outperform.",
+  "formula": "rank(MOM12_1)",
+  "features": ["MOM12_1"],
+  "mutation": "Price-only momentum test — validates pipeline without fundamentals",
+  "universe": "sp500",
+  "start_date": "2018-01-01",
+  "end_date": "2024-12-31",
+  "neutralization": "sector",
+  "rebalance": "monthly",
+  "transaction_cost_bps": 5,
+  "holding_period_days": 20
+}

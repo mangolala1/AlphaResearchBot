@@ -24,6 +24,7 @@ from core.decision import decide
 from core.memory import ExperimentStore
 from core.reflection import generate_reflection
 from core.robustness import run_robustness
+from core.similarity import check_similarity
 from core.types import ExperimentRecord
 from core.validator import validate_alpha
 
@@ -34,6 +35,9 @@ def main() -> None:
     parser.add_argument("--db", default="db/experiments.db", help="SQLite database path")
     parser.add_argument(
         "--no-cache", action="store_true", help="Ignore parquet cache and force fresh data fetch"
+    )
+    parser.add_argument(
+        "--force", action="store_true", help="Skip similarity check and run even if alpha is too similar to a prior one"
     )
     args = parser.parse_args()
 
@@ -68,6 +72,21 @@ def main() -> None:
             print(f"  ERROR: {e}")
         sys.exit(1)
     print("  Validation passed.\n")
+
+    # Similarity check
+    print("[ Step 1.5 ] Checking similarity against prior alphas...")
+    _store = ExperimentStore(db_path=args.db)
+    sim = check_similarity(alpha, _store)
+    if not sim["is_unique"]:
+        print(f"  WARNING: Alpha is {sim['similarity_score']:.0%} similar to '{sim['most_similar_id']}'")
+        print(f"  {sim['reason']}")
+        if not args.force:
+            print("  Use --force to run anyway.")
+            sys.exit(1)
+        else:
+            print("  --force flag set, continuing.\n")
+    else:
+        print(f"  {sim['reason']}\n")
 
     # Backtest
     print("[ Step 2 ] Running backtest...")
@@ -105,7 +124,7 @@ def main() -> None:
 
     # Reflection
     print("[ Step 5 ] Generating reflection...")
-    reflection = generate_reflection(alpha, metrics, verdict, failure_reason)
+    reflection = generate_reflection(alpha, metrics, robustness, verdict, failure_reason)
     print()
     print(reflection)
     print()

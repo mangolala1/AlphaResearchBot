@@ -1,0 +1,17 @@
+{
+  "hypothesis": "EBITDA margin alone, smoothed by a 5-day moving average, reduces turnover while maintaining a stable signal in the S&P 500 universe.",
+  "formula": "rank(EBITDA_MARGIN)",
+  "features": [
+    "EBITDA_MARGIN"
+  ],
+  "mutation": "Replaced the additive combination of EBITDA margin and momentum with a single EBITDA margin factor, and applied a 5-day moving average to the raw EBITDA_MARGIN before ranking to reduce turnover.",
+  "universe": "sp500",
+  "start_date": "2018-01-01",
+  "end_date": "2024-12-31",
+  "neutralization": "sector",
+  "rebalance": "monthly",
+  "transaction_cost_bps": 5,
+  "holding_period_days": 20,
+  "alpha_id": "alpha_001_mut_20260622045022",
+  "parent_id": "alpha_001"
+}
