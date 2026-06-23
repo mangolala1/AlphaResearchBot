@@ -27,7 +27,7 @@ Each experiment links back to its parent, building a research tree over time. Th
 ## Alpha Evolution Graph
 
 Each run is a node in a growing research tree. Failed experiments are mutated into children that address the specific failure mode, while promising ones branch into new directions.
-
+Below is a sample graph of a few experiments, showing their hypotheses, features, and Sharpe ratios. The color indicates the verdict: red = failed, yellow = inconclusive, green = promising.
 ```mermaid
 flowchart TD
     A["<b>alpha_001</b><br/>quality + momentum<br/>Sharpe −0.34"]
