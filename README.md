@@ -24,6 +24,35 @@ The system runs a closed cycle:
 
 Each experiment links back to its parent, building a research tree over time. This means you can trace exactly why an alpha exists and what it was trying to fix.
 
+## Alpha Evolution Graph
+
+Each run is a node in a growing research tree. Failed experiments are mutated into children that address the specific failure mode, while promising ones branch into new directions.
+
+```mermaid
+flowchart TD
+    A["<b>alpha_001</b><br/>quality + momentum<br/>Sharpe −0.34"]
+    B["<b>alpha_002</b><br/>quality only<br/>Sharpe −0.78"]
+    C["<b>alpha_003</b><br/>quality lagged<br/>Sharpe −0.10"]
+    D["<b>alpha_004</b><br/>quarterly rebalance<br/>Sharpe 0.42"]
+    E["<b>alpha_005</b><br/>value<br/>Sharpe 0.58"]
+    F["<b>alpha_006</b><br/>profitability<br/>Sharpe 0.31"]
+
+    A -->|remove momentum| B
+    B -->|add lag| C
+    C -->|quarterly rebalance| D
+    D -->|new branch: value| E
+    D -->|new branch: profitability| F
+
+    classDef failed fill:#e74c3c,color:#fff,stroke:none
+    classDef inconclusive fill:#f39c12,color:#fff,stroke:none
+    classDef promising fill:#2ecc71,color:#fff,stroke:none
+
+    class A,B,C failed
+    class D inconclusive
+    class E promising
+    class F failed
+```
+
 ## Why This Matters
 
 Most backtesting tools treat each experiment as independent. You run a signal, get a number, move on. There's no memory of what you've already tried, no systematic diagnosis of failures, and no mechanism to ensure the next experiment is meaningfully different from the last. Researchers end up rediscovering the same dead ends.
