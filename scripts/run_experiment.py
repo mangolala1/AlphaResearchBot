@@ -20,7 +20,7 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 from core.backtest import run_backtest
 from core.data_loader import DataLoader
-from core.decision import decide
+from core.decision import check_tier1, decide
 from core.memory import ExperimentStore
 from core.reflection import generate_reflection
 from core.robustness import run_robustness
@@ -100,37 +100,64 @@ def main() -> None:
     metrics = backtest_result["metrics"]
     print(f"  IC_mean        : {metrics['IC_mean']:.4f}  (over {len(backtest_result['ic_series'])} periods)")
     print(f"  ICIR           : {metrics['ICIR']:.4f}")
+    print(f"  Monotonicity   : {metrics['monotonicity']:.4f}")
     print(f"  Sharpe         : {metrics['Sharpe']:.4f}")
     print(f"  Deflated Sharpe: {metrics['deflated_sharpe']:.4f}")
-    print(f"  Turnover       : {metrics['turnover']:.1f} bps/yr (estimated)")
+    print(f"  Turnover       : {metrics['turnover']:.4f}  (constituent replacement rate)")
     print(f"  Max Drawdown   : {metrics['max_drawdown']:.4f}")
     print(f"  Noise Risk     : {metrics['noise_risk']}\n")
 
-    # Robustness
-    print("[ Step 3 ] Running robustness checks...")
-    robustness = run_robustness(alpha, backtest_result)
-    print(f"  Sector Stability      : {robustness['sector_stability']:.4f}")
-    print(f"  Subperiod Stability   : {robustness['subperiod_stability']:.4f}")
-    print(f"  Market Regime Sharpe  : {robustness['market_regime_sharpe']:.4f}")
-    print(f"  Placebo Score         : {robustness['placebo_score']:.4f}\n")
+    # Tier 1 check — early exit if no predictive power
+    print("[ Step 3 ] Tier 1 — predictive power check...")
+    tier1_verdict, tier1_reason = check_tier1(metrics)
+    if tier1_verdict == "failed":
+        print(f"  FAILED: {tier1_reason}\n")
+        verdict, failure_reason = "failed", tier1_reason
+        robustness = {"sector_stability": {}, "subperiod_stability": 0.0,
+                      "market_regime_sharpe": {}, "placebo_score": 0.0}
+    else:
+        if tier1_verdict == "revise":
+            print(f"  WEAK: {tier1_reason}")
+        else:
+            print("  Passed.")
+        print()
 
-    # Decision
-    print("[ Step 4 ] Applying decision logic...")
-    verdict, failure_reason = decide(metrics, robustness)
-    print(f"  Verdict: {verdict.upper()}")
-    if failure_reason:
-        print(f"  Reason : {failure_reason}")
-    print()
+        # Robustness (Tier 3 data)
+        print("[ Step 4 ] Running robustness checks (Tier 3 diagnostics)...")
+        robustness = run_robustness(alpha, backtest_result)
+        sector_summary = "  ".join(
+            f"{s}: {v:+.3f}" for s, v in sorted(
+                robustness["sector_stability"].items(), key=lambda x: -abs(x[1])
+            )[:5]
+        )
+        regime_summary = "  ".join(
+            f"{r}: {v:+.3f}" for r, v in robustness["market_regime_sharpe"].items()
+        )
+        print(f"  Sector IC          : {sector_summary or 'N/A'}")
+        print(f"  Subperiod Stability: {robustness['subperiod_stability']:.4f}")
+        print(f"  Regime Sharpes     : {regime_summary or 'N/A'}")
+        print(f"  Placebo Score      : {robustness['placebo_score']:.4f}\n")
+
+        # Tier 2 decision
+        print("[ Step 5 ] Tier 2 — implementation check...")
+        verdict, failure_reason = decide(metrics, robustness)
+        # If Tier 1 was soft and Tier 2 says promising, keep as revise
+        if tier1_verdict == "revise" and verdict == "promising":
+            verdict, failure_reason = "revise", tier1_reason
+        print(f"  Verdict: {verdict.upper()}")
+        if failure_reason:
+            print(f"  Reason : {failure_reason}")
+        print()
 
     # Reflection
-    print("[ Step 5 ] Generating reflection...")
+    print("[ Step 6 ] Generating reflection...")
     reflection = generate_reflection(alpha, metrics, robustness, verdict, failure_reason)
     print()
     print(reflection)
     print()
 
     # Save to memory
-    print("[ Step 6 ] Saving to database...")
+    print("[ Step 7 ] Saving to database...")
     record = ExperimentRecord(
         alpha_id=alpha["alpha_id"],
         parent_id=alpha.get("parent_id"),
