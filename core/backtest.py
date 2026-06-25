@@ -53,6 +53,9 @@ def run_backtest(
     sector_ic: dict[str, list[float]] = {}
     all_forward_returns: list[float] = []
     all_signal_values: list[list[float]] = []
+    quintile_rets_list: list[list[float]] = []
+    top_quintile_sets: list[frozenset] = []
+    bottom_quintile_sets: list[frozenset] = []
 
     holding_days = int(alpha.get("holding_period_days", 20))
     prev_weights: pd.Series | None = None
@@ -79,6 +82,7 @@ def run_backtest(
         except Exception:
             continue
 
+        signal = _process_signal(signal)
         if len(signal) < 20:
             continue
 
@@ -125,15 +129,19 @@ def run_backtest(
                 if not np.isnan(sec_ic):
                     sector_ic.setdefault(sector, []).append(float(sec_ic))
 
-        # Portfolio simulation: long top quintile, short bottom quintile
-        q_low = signal_aligned.quantile(0.2)
-        q_high = signal_aligned.quantile(0.8)
-        long_stocks = signal_aligned[signal_aligned >= q_high].index
-        short_stocks = signal_aligned[signal_aligned <= q_low].index
+        # Portfolio simulation: five quintiles (Q1=bottom, Q5=top)
+        cuts = signal_aligned.quantile([0.2, 0.4, 0.6, 0.8])
+        bins = [-np.inf, cuts[0.2], cuts[0.4], cuts[0.6], cuts[0.8], np.inf]
+        labels = pd.cut(signal_aligned, bins=bins, labels=[1, 2, 3, 4, 5], duplicates="drop")
+        q_rets = [
+            float(fwd_ret_aligned[labels == q].mean()) if (labels == q).sum() > 0 else 0.0
+            for q in range(1, 6)
+        ]
+        quintile_rets_list.append(q_rets)
+        top_quintile_sets.append(frozenset(signal_aligned[labels == 5].index.tolist()))
+        bottom_quintile_sets.append(frozenset(signal_aligned[labels == 1].index.tolist()))
 
-        long_ret = fwd_ret_aligned.loc[long_stocks].mean() if len(long_stocks) > 0 else 0.0
-        short_ret = fwd_ret_aligned.loc[short_stocks].mean() if len(short_stocks) > 0 else 0.0
-        port_ret = float(long_ret - short_ret)
+        port_ret = q_rets[4] - q_rets[0]  # Q5 - Q1
         portfolio_returns.append(port_ret)
 
     if len(ic_series) < 3:
@@ -142,7 +150,7 @@ def run_backtest(
             "check that the date range and features align with available data."
         )
 
-    metrics = _compute_metrics(ic_series, portfolio_returns)
+    metrics = _compute_metrics(ic_series, portfolio_returns, quintile_rets_list, top_quintile_sets, bottom_quintile_sets)
 
     return BacktestResult(
         metrics=metrics,
@@ -173,6 +181,9 @@ def _monthly_dates(
 def _compute_metrics(
     ic_series: list[float],
     portfolio_returns: list[float],
+    quintile_rets_list: list[list[float]],
+    top_quintile_sets: list[frozenset],
+    bottom_quintile_sets: list[frozenset],
 ) -> BacktestMetrics:
     ics = np.array(ic_series)
     rets = np.array(portfolio_returns)
@@ -186,9 +197,11 @@ def _compute_metrics(
     sharpe = ret_mean / ret_std * np.sqrt(12)  # annualised (monthly periods)
 
     max_drawdown = _max_drawdown(rets)
-
-    # Deflated Sharpe: 25th percentile of rolling 12-period Sharpe windows
     deflated_sharpe = _deflated_sharpe(rets, sharpe)
+    long_turnover = _compute_turnover(top_quintile_sets)
+    short_turnover = _compute_turnover(bottom_quintile_sets)
+    turnover = (long_turnover + short_turnover) / 2
+    monotonicity = _compute_monotonicity(quintile_rets_list)
 
     if sharpe <= 0:
         noise_risk = "high"
@@ -201,19 +214,63 @@ def _compute_metrics(
         else:
             noise_risk = "low"
 
-    # Turnover estimate: approximated from IC volatility (not from actual weight changes
-    # since we don't track individual weights across periods in this simplified engine)
-    turnover = float(np.std(ics, ddof=1) * 200 * 12)  # rough bps/yr proxy
-
     return BacktestMetrics(
         IC_mean=round(ic_mean, 4),
         ICIR=round(icir, 4),
         Sharpe=round(float(sharpe), 4),
-        turnover=round(turnover, 2),
+        turnover=round(turnover, 4),
+        monotonicity=round(monotonicity, 4),
         max_drawdown=round(max_drawdown, 4),
         deflated_sharpe=round(deflated_sharpe, 4),
         noise_risk=noise_risk,  # type: ignore[arg-type]
     )
+
+
+def _process_signal(signal: pd.Series, winsor_pct: float = 0.01) -> pd.Series:
+    """Drop NaN, winsorize at 1%/99%, then cross-sectionally z-score."""
+    signal = signal.dropna()
+    if len(signal) < 2:
+        return signal
+    lo, hi = signal.quantile(winsor_pct), signal.quantile(1 - winsor_pct)
+    signal = signal.clip(lower=lo, upper=hi)
+    std = signal.std(ddof=1)
+    if std > 0:
+        signal = (signal - signal.mean()) / std
+    return signal
+
+
+def _compute_turnover(quintile_sets):
+    """Compute number of common elements between consecutive quintile sets."""
+    if len(quintile_sets) < 2:
+        return 0.0
+
+    turnovers = []
+    for prev, curr in zip(quintile_sets[:-1], quintile_sets[1:]):
+        if len(prev) == 0:
+            continue
+        overlap = len(prev & curr)
+        turnovers.append(1 - overlap / len(prev))
+    return float(np.mean(turnovers))
+
+
+def _compute_monotonicity(quintile_rets_list: list[list[float]]) -> float:
+    "spearman correlation between quintile number and returns, averaged over periods"
+    if not quintile_rets_list:
+        return 0.0
+
+    quintile_ranks = [1, 2, 3, 4, 5]
+    rhos = []
+
+    for q_rets in quintile_rets_list:
+        if len(q_rets) != 5:
+            continue
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            rho, _ = stats.spearmanr(quintile_ranks, q_rets)
+        if not np.isnan(rho):
+            rhos.append(rho)
+
+    return float(np.mean(rhos)) if rhos else 0.0
 
 
 def _max_drawdown(returns: np.ndarray) -> float:
@@ -224,14 +281,20 @@ def _max_drawdown(returns: np.ndarray) -> float:
 
 
 def _deflated_sharpe(returns: np.ndarray, sharpe: float) -> float:
-    """Conservative Sharpe estimate: 25th percentile of rolling 12-period windows."""
-    if len(returns) < 13:
-        return sharpe * 0.7
-    window = 12
-    rolling_sharpes = []
-    for i in range(len(returns) - window + 1):
-        window_rets = returns[i : i + window]
-        w_mean = np.mean(window_rets)
-        w_std = np.std(window_rets, ddof=1) + 1e-9
-        rolling_sharpes.append(w_mean / w_std * np.sqrt(12))
-    return float(np.percentile(rolling_sharpes, 25))
+    """Sharpe ratio discounted for multiple testing (deflated Sharpe)."""
+
+    pass
+
+
+
+if __name__ == "__main__":
+    import json
+    import pprint
+
+    from core.types import AlphaConfig
+
+    with open("experiments/sample_alpha_001.json") as f:
+        config: AlphaConfig = json.load(f)
+
+    result = run_backtest(config)
+    pprint.pprint(result.metrics)
