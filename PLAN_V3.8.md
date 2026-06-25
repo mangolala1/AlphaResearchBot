@@ -153,3 +153,9 @@ Clicking empty canvas resets panel to placeholder.
 3. Click node → side panel populates with full detail; click canvas → resets to placeholder
 4. Screenshot is clean enough for README embed
 
+### More changes on layout
+- dark mode to light mode
+- larger font
+- add a summary panel on the top showing number of experiments, number of promising, number of failed, number of revise,
+best IC, best Sharpe
+- also make the right panel retractable 

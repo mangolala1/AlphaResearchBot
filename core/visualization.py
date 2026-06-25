@@ -9,7 +9,7 @@ import networkx as nx
 
 _VERDICT_COLORS = {
     "promising": "#2ecc71",
-    "revise":    "#f1c40f",
+    "revise":    "#f39c12",
     "failed":    "#e74c3c",
 }
 _DEFAULT_COLOR = "#95a5a6"
@@ -78,107 +78,199 @@ _HTML_TEMPLATE = """\
 <head>
 <meta charset="UTF-8">
 <title>Alpha Research Graph</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
 
   body {
-    background: #1a1a2e;
-    color: #e0e0e0;
-    font-family: 'Courier New', Courier, monospace;
+    background: #f5f6fa;
+    color: #1a1a2e;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     height: 100vh;
     overflow: hidden;
+    display: flex;
+    flex-direction: column;
   }
 
+  /* ── Summary bar ────────────────────────────────── */
+  #summary-bar {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 20px;
+    background: #ffffff;
+    border-bottom: 2px solid #dde1e7;
+    flex-wrap: wrap;
+  }
+
+  #summary-bar .bar-title {
+    font-size: 15px;
+    font-weight: bold;
+    color: #1a1a2e;
+    letter-spacing: 0.5px;
+    margin-right: 8px;
+    white-space: nowrap;
+  }
+
+  .stat-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-size: 13px;
+    font-weight: bold;
+    white-space: nowrap;
+  }
+
+  .stat-chip .chip-label {
+    font-weight: normal;
+    opacity: 0.75;
+    font-size: 12px;
+  }
+
+  .chip-total     { background: #e8eaf6; color: #3949ab; }
+  .chip-promising { background: #e8f5e9; color: #2e7d32; }
+  .chip-revise    { background: #fff8e1; color: #f57f17; }
+  .chip-failed    { background: #fce4e4; color: #c62828; }
+  .chip-sharpe    { background: #e3f2fd; color: #1565c0; }
+  .chip-ic        { background: #f3e5f5; color: #6a1b9a; }
+
+  .bar-divider {
+    width: 1px;
+    height: 24px;
+    background: #dde1e7;
+    flex-shrink: 0;
+  }
+
+  /* ── Main layout ────────────────────────────────── */
   #layout {
     display: flex;
-    height: 100vh;
+    flex: 1;
+    min-height: 0;
   }
 
   /* ── Left: graph canvas ─────────────────────────── */
   #graph-pane {
-    flex: 0 0 70%;
+    flex: 1;
     position: relative;
-    border-right: 1px solid #2a2a4a;
+    min-width: 0;
   }
 
   #mynetwork {
     width: 100%;
     height: 100%;
+    background: #fafbfc;
   }
 
-  /* ── Right: detail panel ────────────────────────── */
+  /* ── Right: detail panel (starts closed) ────────── */
   #detail-pane {
-    flex: 0 0 30%;
+    flex: 0 0 auto;
+    width: 0;
+    overflow: hidden;
+    transition: width 0.28s ease, border-color 0.28s ease;
+    border-left: 2px solid transparent;
+  }
+
+  #detail-pane.open {
+    width: 360px;
+    border-left-color: #dde1e7;
+  }
+
+  /* inner wrapper keeps content at full width during the slide */
+  #detail-inner {
+    width: 360px;
+    height: 100%;
     display: flex;
     flex-direction: column;
-    background: #0f0f1e;
-    overflow: hidden;
+    background: #ffffff;
   }
 
   #detail-header {
     flex-shrink: 0;
-    padding: 12px 16px 10px;
-    background: #13132a;
-    border-bottom: 1px solid #2a2a4a;
+    padding: 14px 18px 12px;
+    background: #f0f2f5;
+    border-bottom: 1px solid #dde1e7;
   }
 
   .hdr-row {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    gap: 8px;
   }
 
   .hdr-id {
-    font-size: 15px;
+    font-size: 17px;
     font-weight: bold;
-    color: #fff;
+    color: #1a1a2e;
     letter-spacing: 0.5px;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .verdict-badge {
-    font-size: 11px;
+    font-size: 12px;
     font-weight: bold;
-    padding: 2px 9px;
+    padding: 3px 11px;
     border-radius: 10px;
-    color: #111;
+    color: #fff;
+    flex-shrink: 0;
   }
+
+  #close-btn {
+    flex-shrink: 0;
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 19px;
+    color: #7a8499;
+    line-height: 1;
+    padding: 0 2px;
+    transition: color 0.15s;
+  }
+  #close-btn:hover { color: #1a1a2e; }
 
   #detail-body {
     flex: 1;
     overflow-y: auto;
-    padding: 12px 16px 20px;
+    padding: 14px 18px 24px;
   }
 
   /* scrollbar */
-  #detail-body::-webkit-scrollbar { width: 5px; }
-  #detail-body::-webkit-scrollbar-track { background: #0f0f1e; }
-  #detail-body::-webkit-scrollbar-thumb { background: #2a2a4a; border-radius: 3px; }
+  #detail-body::-webkit-scrollbar { width: 6px; }
+  #detail-body::-webkit-scrollbar-track { background: #f5f6fa; }
+  #detail-body::-webkit-scrollbar-thumb { background: #c8cdd6; border-radius: 3px; }
 
   .placeholder {
-    color: #3a3a5a;
+    color: #b0b8c8;
     text-align: center;
     margin-top: 70px;
-    font-size: 13px;
-    line-height: 2;
+    font-size: 14px;
+    line-height: 2.2;
   }
 
   /* section headers */
   .sec {
-    font-size: 9px;
+    font-size: 11px;
     text-transform: uppercase;
     letter-spacing: 1.2px;
-    color: #444466;
-    margin-top: 16px;
-    margin-bottom: 5px;
-    padding-bottom: 3px;
-    border-bottom: 1px solid #1e1e38;
+    color: #7a8499;
+    margin-top: 18px;
+    margin-bottom: 6px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid #e4e7ed;
   }
 
   /* hypothesis / mutation / reflection text */
   .prose {
-    font-size: 11px;
-    color: #9090b0;
-    line-height: 1.55;
+    font-size: 13px;
+    color: #3a4254;
+    line-height: 1.6;
     white-space: pre-wrap;
     word-break: break-word;
   }
@@ -186,15 +278,16 @@ _HTML_TEMPLATE = """\
   /* formula code block */
   .formula-block {
     display: block;
-    background: #131328;
-    border: 1px solid #2a2a50;
-    border-radius: 4px;
-    padding: 7px 10px;
-    font-size: 12px;
-    color: #7ec8e3;
+    background: #f0f4ff;
+    border: 1px solid #c5d0e8;
+    border-radius: 5px;
+    padding: 8px 12px;
+    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+    font-size: 13px;
+    color: #1a56db;
     white-space: pre-wrap;
     word-break: break-all;
-    margin-top: 2px;
+    margin-top: 3px;
   }
 
   /* metric rows */
@@ -202,27 +295,58 @@ _HTML_TEMPLATE = """\
     display: flex;
     justify-content: space-between;
     align-items: baseline;
-    padding: 2px 0;
-    font-size: 12px;
+    padding: 3px 0;
+    font-size: 13px;
   }
 
-  .mname { color: #666688; }
+  .mname { color: #7a8499; }
 
-  .mval       { color: #ccccdd; font-weight: bold; }
-  .mval.warn  { color: #f1c40f; }
-  .mval.bad   { color: #e74c3c; }
+  .mval       { color: #1a1a2e; font-weight: bold; }
+  .mval.warn  { color: #d97706; }
+  .mval.bad   { color: #dc2626; }
 
-  .warn-icon { color: #f1c40f; font-size: 10px; margin-left: 3px; }
+  .warn-icon { color: #d97706; font-size: 11px; margin-left: 4px; }
 
   .failure-text {
-    font-size: 11px;
-    color: #e74c3c;
-    line-height: 1.5;
+    font-size: 13px;
+    color: #dc2626;
+    line-height: 1.6;
     word-break: break-word;
   }
 </style>
 </head>
 <body>
+
+<div id="summary-bar">
+  <span class="bar-title">Alpha Research</span>
+  <div class="bar-divider"></div>
+  <span class="stat-chip chip-total">
+    <span class="chip-label">Total</span>
+    <span id="stat-total">—</span>
+  </span>
+  <span class="stat-chip chip-promising">
+    <span class="chip-label">Promising</span>
+    <span id="stat-promising">—</span>
+  </span>
+  <span class="stat-chip chip-revise">
+    <span class="chip-label">Revise</span>
+    <span id="stat-revise">—</span>
+  </span>
+  <span class="stat-chip chip-failed">
+    <span class="chip-label">Failed</span>
+    <span id="stat-failed">—</span>
+  </span>
+  <div class="bar-divider"></div>
+  <span class="stat-chip chip-sharpe">
+    <span class="chip-label">Best Sharpe</span>
+    <span id="stat-sharpe">—</span>
+  </span>
+  <span class="stat-chip chip-ic">
+    <span class="chip-label">Best IC</span>
+    <span id="stat-ic">—</span>
+  </span>
+</div>
+
 <div id="layout">
 
   <div id="graph-pane">
@@ -230,14 +354,15 @@ _HTML_TEMPLATE = """\
   </div>
 
   <div id="detail-pane">
-    <div id="detail-header">
-      <div class="hdr-row">
-        <span class="hdr-id" id="hdr-id">Alpha Research Graph</span>
-        <span class="verdict-badge" id="hdr-badge" style="background:#2a2a4a;color:#888"></span>
+    <div id="detail-inner">
+      <div id="detail-header">
+        <div class="hdr-row">
+          <span class="hdr-id" id="hdr-id">—</span>
+          <span class="verdict-badge" id="hdr-badge" style="background:#dde1e7;color:#7a8499"></span>
+          <button id="close-btn" title="Close panel">&#x2715;</button>
+        </div>
       </div>
-    </div>
-    <div id="detail-body">
-      <div class="placeholder">&#8592; click a node<br>to view details</div>
+      <div id="detail-body"></div>
     </div>
   </div>
 
@@ -262,6 +387,26 @@ const T = {
   drawdown_hard: -0.40,
   drawdown_soft: -0.25,
 };
+
+// ── Populate summary bar ──────────────────────────────────────────────────────
+(function() {
+  const total     = NODES_DATA.length;
+  const promising = NODES_DATA.filter(n => n.verdict === 'promising').length;
+  const revise    = NODES_DATA.filter(n => n.verdict === 'revise').length;
+  const failed    = NODES_DATA.filter(n => n.verdict === 'failed').length;
+
+  const sharpes = NODES_DATA.map(n => n.Sharpe).filter(v => isFinite(v));
+  const ics     = NODES_DATA.map(n => n.IC_mean).filter(v => isFinite(v));
+  const bestSharpe = sharpes.length ? Math.max(...sharpes) : null;
+  const bestIC     = ics.length     ? Math.max(...ics)     : null;
+
+  document.getElementById('stat-total').textContent     = total;
+  document.getElementById('stat-promising').textContent = promising;
+  document.getElementById('stat-revise').textContent    = revise;
+  document.getElementById('stat-failed').textContent    = failed;
+  document.getElementById('stat-sharpe').textContent    = bestSharpe !== null ? bestSharpe.toFixed(3) : '—';
+  document.getElementById('stat-ic').textContent        = bestIC     !== null ? bestIC.toFixed(4)     : '—';
+})();
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function nodeColor(verdict) {
@@ -306,13 +451,13 @@ const visNodes = new vis.DataSet(NODES_DATA.map(n => {
     color: {
       background: bg,
       border: bg,
-      highlight: { background: bg, border: '#ffffff' },
+      highlight: { background: bg, border: '#333333' },
     },
-    font: { color: '#111111', size: 12, face: 'Courier New', bold: { size: 13, color: '#000000' } },
+    font: { color: '#ffffff', size: 14, face: 'Inter', bold: { size: 15, color: '#ffffff' } },
     borderWidth: 3,
     borderWidthSelected: 4,
     shapeProperties: { borderDashes: n.verdict === 'failed' ? [5, 3] : false },
-    margin: { top: 8, right: 10, bottom: 8, left: 10 },
+    margin: { top: 9, right: 12, bottom: 9, left: 12 },
   };
 }));
 
@@ -322,8 +467,8 @@ const visEdges = new vis.DataSet(EDGES_DATA.map((e, i) => ({
   from:  e.from,
   to:    e.to,
   label: e.mutation ? e.mutation.substring(0, 35) : '',
-  font:  { size: 10, color: '#888888', align: 'middle', strokeWidth: 0 },
-  color: { color: '#666688', highlight: '#9999cc' },
+  font:  { size: 12, color: '#5a6480', align: 'middle', strokeWidth: 2, strokeColor: '#ffffff' },
+  color: { color: '#9aa5be', highlight: '#3949ab' },
   arrows: 'to',
   smooth: { type: 'curvedCW', roundness: 0.08 },
 })));
@@ -349,21 +494,49 @@ const network = new vis.Network(
   }
 );
 
+// ── Panel open / close ────────────────────────────────────────────────────────
+const detailPane = document.getElementById('detail-pane');
+
+function openPanel() {
+  if (detailPane.classList.contains('open')) return;
+  detailPane.classList.add('open');
+  detailPane.addEventListener('transitionend', function h(e) {
+    if (e.propertyName !== 'width') return;
+    network.redraw();
+    detailPane.removeEventListener('transitionend', h);
+  });
+}
+
+function closePanel() {
+  if (!detailPane.classList.contains('open')) return;
+  detailPane.classList.remove('open');
+  detailPane.addEventListener('transitionend', function h(e) {
+    if (e.propertyName !== 'width') return;
+    network.fit({ animation: { duration: 350, easingFunction: 'easeInOutQuad' } });
+    detailPane.removeEventListener('transitionend', h);
+  });
+}
+
+function clearDetail() {
+  document.getElementById('hdr-id').textContent    = '—';
+  document.getElementById('hdr-badge').textContent = '';
+  document.getElementById('hdr-badge').style.background = '#dde1e7';
+  document.getElementById('hdr-badge').style.color      = '#7a8499';
+  document.getElementById('detail-body').innerHTML = '';
+}
+
+document.getElementById('close-btn').addEventListener('click', function() {
+  network.unselectAll();
+  clearDetail();
+  closePanel();
+});
+
 // ── Click handlers ────────────────────────────────────────────────────────────
 network.on('selectNode', params => {
   const n = NODES_DATA.find(x => x.id === params.nodes[0]);
-  if (n) renderDetail(n);
+  if (n) { openPanel(); renderDetail(n); }
 });
-network.on('deselectNode', resetDetail);
-
-function resetDetail() {
-  document.getElementById('hdr-id').textContent    = 'Alpha Research Graph';
-  document.getElementById('hdr-badge').textContent = '';
-  document.getElementById('hdr-badge').style.background = '#2a2a4a';
-  document.getElementById('hdr-badge').style.color      = '#888';
-  document.getElementById('detail-body').innerHTML =
-    '<div class="placeholder">&#8592; click a node<br>to view details</div>';
-}
+network.on('deselectNode', function() { clearDetail(); closePanel(); });
 
 function renderDetail(n) {
   // Header
@@ -371,7 +544,7 @@ function renderDetail(n) {
   const badge = document.getElementById('hdr-badge');
   badge.textContent       = n.verdict.toUpperCase();
   badge.style.background  = nodeColor(n.verdict);
-  badge.style.color       = '#111';
+  badge.style.color       = '#fff';
 
   // Warn classes
   const wIC   = warnClass(n.IC_mean,      T.ic_mean_soft);
