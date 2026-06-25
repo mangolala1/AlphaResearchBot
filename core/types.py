@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Literal, TypedDict
 
 
-Verdict = Literal["promising", "failed", "inconclusive"]
+Verdict = Literal["promising", "revise", "failed"]
 
 
 class AlphaConfig(TypedDict, total=False):
@@ -30,15 +30,16 @@ class BacktestMetrics(TypedDict):
     ICIR: float
     Sharpe: float
     turnover: float
+    monotonicity: float
     max_drawdown: float
     deflated_sharpe: float
     noise_risk: Literal["low", "medium", "high"]
 
 
 class RobustnessResult(TypedDict):
-    sector_stability: float
+    sector_stability: dict[str, float]
     subperiod_stability: float
-    market_regime_sharpe: float
+    market_regime_sharpe: dict[str, float]
     placebo_score: float
 
 

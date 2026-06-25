@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from core.decision import ICIR_THRESHOLD, TURNOVER_THRESHOLD
+from core.decision import ICIR_SOFT, TURNOVER_MAX
 from core.types import ExperimentRecord, FailureCategory, MemorySummary
 from core.validator import EVALUATOR_FEATURES
 
@@ -11,7 +11,7 @@ def classify_failure(record: ExperimentRecord) -> str | None:
     """Return the failure category for an experiment, or None if it is promising.
 
     Priority: high_turnover → negative_sharpe → weak_ic → high_noise → poor_robustness.
-    First match wins. Covers both 'failed' and 'inconclusive' verdicts.
+    First match wins. Covers both 'failed' and 'revise' verdicts.
     """
     if record.get("verdict") == "promising":
         return None
@@ -19,17 +19,16 @@ def classify_failure(record: ExperimentRecord) -> str | None:
     metrics = record.get("metrics") or {}
     robustness = record.get("robustness") or {}
 
-    if metrics.get("turnover", 0.0) > TURNOVER_THRESHOLD:
+    if metrics.get("turnover", 0.0) > TURNOVER_MAX:
         return "high_turnover"
     if metrics.get("Sharpe", 0.0) < 0:
         return "negative_sharpe"
-    if metrics.get("ICIR", 0.0) < ICIR_THRESHOLD:
+    if metrics.get("ICIR", 0.0) < ICIR_SOFT:
         return "weak_ic"
     if metrics.get("noise_risk") == "high":
         return "high_noise"
     if (
-        robustness.get("sector_stability", 1.0) < 0.3
-        or robustness.get("subperiod_stability", 1.0) < 0.3
+        robustness.get("subperiod_stability", 1.0) < 0.3
         or robustness.get("placebo_score", 1.0) < 0.3
     ):
         return "poor_robustness"
@@ -106,7 +105,7 @@ def _build_trend_observations(
     observations: list[str] = []
     total = len(records)
     total_failures = sum(
-        verdict_counts.get(v, 0) for v in ("failed", "inconclusive")
+        verdict_counts.get(v, 0) for v in ("failed", "revise")
     )
 
     if total_failures > 0 and failure_category_counts:

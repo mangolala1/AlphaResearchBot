@@ -72,7 +72,7 @@ def main() -> None:
                 "features": s["features"],
                 "mutation": f"Planner suggestion: {s['direction']}",
                 "universe": base.get("universe", "sp500"),
-                "start_date": base.get("start_date", "2018-01-01"),
+                "start_date": base.get("start_date", "2021-01-01"),
                 "end_date": base.get("end_date", "2024-12-31"),
                 "neutralization": base.get("neutralization", "sector"),
                 "rebalance": base.get("rebalance", "monthly"),
