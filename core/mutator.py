@@ -20,14 +20,16 @@ _SYSTEM_PROMPT = (
     "Be precise and concrete. Only suggest formulas using supported operators and raw data columns."
 )
 
-_SAFE_OPERATORS: frozenset[str] = ALLOWED_FUNCTION_NAMES - {"delta", "ts_mean", "ts_std"}
-
 _FORMULA_CONSTRAINT = f"""IMPORTANT — raw_formula uses raw DataFrame column names directly.
 Available columns: {', '.join(sorted(AVAILABLE_RAW_COLUMNS))}
-Allowed cross-sectional operators: {', '.join(sorted(_SAFE_OPERATORS))}()
-Pandas time-series methods (call directly on columns): .shift(n), .rolling(n).std(), .pct_change(), .diff(n)
+Cross-sectional operators (operate across tickers per date): {', '.join(sorted(ALLOWED_FUNCTION_NAMES))}()
+  - rank(X), zscore(X), log(X), abs(X), sign(X) — standard cross-sectional ops
+  - delta(X, n)   — change over n periods: X.diff(n)
+  - ts_mean(X, n) — rolling mean over n periods
+  - ts_std(X, n)  — rolling std over n periods
+Pandas time-series methods (call directly on columns): .shift(n), .rolling(n).mean(), .pct_change()
 Standard arithmetic: +  -  *  /  **
-Assume all fundamental columns are already clean with no NaN values, and winsorized after processing."""
+All fundamental columns are already clean with no NaN values — do NOT use .fillna() or .replace()."""
 
 
 def generate_mutation(
