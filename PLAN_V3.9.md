@@ -11,16 +11,20 @@
 
 - Future steps: maybe create more features to take advantage of both quarterly data and TTM data.
 
+### data_process.py
+- Separately loading cashflow and income statement
+- Kept more data columns and add those to available raw data in formula_validator.py
+- Question: Not sure if I should standardize in data_process.py?
 
-### Features_and_Operands.md
-- Created a Features_and_Operands.md to document the available data columns, features and operands supported in 
-the alpha research. 
-- Future Steps: 
-  - Make the feature configurable on lookback time windows, sampling frequency, etc.
-  - Or make it completely autonomous for the agent to propose hypotheses and features to test.
+- Future steps: might need better logic or flexibility for na values handling, maybe keep them at this stage and later on decide how to handle them in signal calculation, e.g., drop or replace with 0 or replace with mean or median by sector, etc.
 
 
-### Features.py
+### formula_validator.py
+- Added more data columns 
+- Added more operators
+- Changed the operators' definition to also show the parameters each can take
+
+### ~~Features.py~~ signal calculation.py
 - Issue1: Winsorization of computed features
   - The current implementation of winsorization is scattered across different feature branches, leading to inconsistencies in how outliers are handled. Some features, such as `VOL_20D`, `LIQUIDITY`, and raw fundamental pass-throughs, do not have any clipping applied, allowing extreme outliers to flow into formula evaluation.
   - Fix: Centralize the winsorization process in the `compute_features` loop, applying it to every feature panel after computation, except for raw price inputs used by momentum features. This will ensure that all computed features are consistently winsorized before use.
@@ -46,6 +50,8 @@ FEATURE_REGISTRY = {
     },
 }
 ```
+- Issue1: na handling in signal calculation: operators like rolling() might create na values in the first few rows, and then the formula evaluation will create na values for those rows. 
+- Fix: Should pre-load the data for one year so that this won't happen, and also add a check for na values before applying the formula?
 
 ### Robustness.py
 - Issue: The current implementation of robustness checks may not be correctly applied to all features, leading to potential inconsistencies in the evaluation of alpha signals.
