@@ -139,17 +139,6 @@ Each `AlphaConfig` carries two formula strings:
 
 ---
 
-### `features.py`
-Legacy feature computation module. Computes named intermediate feature panels from raw price and fundamental DataFrames. Still used by `backtest.py` via `compute_features()` for the older feature-based pipeline path.
-
-**`compute_features(prices_df, fundamentals_ttm_df, universe_df, feature_names)`** — returns a `(DATE, TICKER)` MultiIndex DataFrame. Only the features listed in `feature_names` are computed. After each feature is computed, cross-sectional winsorisation is applied (except for `ADJUSTED_PRICE` and `ADJUSTED_VOLUME`).
-
-Raw fundamental columns available as pass-throughs: `SALES_LTM`, `COGS_LTM`, `NET_INCOME_LTM`, `SHARES_DILUTED`, `OPER_INCOME_LTM`, `DA_LTM`, `INV_CHANGE_LTM`.
-
-Derived features computed here: `EPS_LTM` (Net Income / Shares), `EBITDA_LTM` (Operating Income + D&A), `EBITDA_MARGIN`, `NET_MARGIN`, `MOM12_1`, `MOM6_1`, `SALES_GROWTH`, `EPS_GROWTH`, `PRICE_TO_SALES`, `VOL_20D`, `LIQUIDITY`.
-
----
-
 ### `backtest.py`
 Core simulation engine. Runs a monthly-rebalanced long-short backtest and returns both summary metrics and intermediate data needed for robustness checks.
 

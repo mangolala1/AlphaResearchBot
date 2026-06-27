@@ -2,19 +2,28 @@
 
 from __future__ import annotations
 
+import hashlib
 import warnings
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
 from scipy import stats
 
-from core.features import compute_features
-from core.formula_validator import evaluate_formula
+from core.data_process import process as process_data
+from core.signal_calculation import compute_signal
 from core.types import AlphaConfig, BacktestMetrics, BacktestResult
 
 if TYPE_CHECKING:
     from core.data_loader import DataLoader
+
+_FUND_COLS = [
+    "SALES_LTM", "COGS_LTM", "NET_INCOME_LTM", "SHARES_DILUTED",
+    "OPER_INCOME_LTM", "DA_LTM", "INV_CHANGE_LTM",
+]
+
+_DATA_DIR = Path("data")
 
 
 def run_backtest(
@@ -28,17 +37,34 @@ def run_backtest(
 
     start_date = alpha["start_date"]
     end_date = alpha["end_date"]
+    no_cache = getattr(data_loader, "_no_cache", False)
 
-    # Load raw data (cached after first run)
     prices_df, fundamentals_ttm_df, universe_df = data_loader.load(start_date, end_date)
 
-    # Compute derived features
-    feature_panel = compute_features(
-        prices_df, fundamentals_ttm_df, universe_df, alpha.get("features", [])
-    )
+    # Load processed panel from data/ if available; otherwise build and save it
+    processed_path = _processed_path(start_date, end_date)
+    if not no_cache and processed_path.exists():
+        print(f"[Backtest] Loading processed panel from {processed_path}")
+        processed_df = pd.read_parquet(processed_path)
+    else:
+        raw_panel = _build_raw_panel(prices_df, fundamentals_ttm_df, universe_df)
+
+        fund_cols = [c for c in _FUND_COLS if c in raw_panel.columns]
+        processed_df = process_data(raw_panel, value_cols=fund_cols)
+
+        # Join raw price columns back — not standardised, used in momentum ratios
+        price_mi = raw_panel[["ADJUSTED_PRICE", "ADJUSTED_VOLUME"]].reindex(processed_df.index)
+        processed_df = processed_df.join(price_mi)
+
+        _DATA_DIR.mkdir(parents=True, exist_ok=True)
+        processed_df.to_parquet(processed_path)
+        print(f"[Backtest] Saved processed panel to {processed_path}")
+
+    # Compute full signal panel over the entire date range at once
+    signal_series = compute_signal(processed_df, alpha["raw_formula"])
 
     # Generate monthly rebalancing dates
-    rebal_dates = _monthly_dates(start_date, end_date, feature_panel)
+    rebal_dates = _monthly_dates(start_date, end_date, processed_df)
 
     # Build price pivot for forward return calculation
     price_pivot = prices_df.copy()
@@ -57,32 +83,15 @@ def run_backtest(
     top_quintile_sets: list[frozenset] = []
     bottom_quintile_sets: list[frozenset] = []
 
-    holding_days = int(alpha.get("holding_period_days", 20))
-    prev_weights: pd.Series | None = None
-
     for i, date in enumerate(rebal_dates[:-1]):
         next_date = rebal_dates[i + 1]
 
-        # Cross-section of features at this date
+        # Slice the pre-computed signal at this rebalancing date
         try:
-            cs_features = feature_panel.loc[date]
+            signal = signal_series.loc[date]
         except KeyError:
             continue
 
-        if cs_features.empty:
-            continue
-
-        # Build feature dict for formula evaluator
-        feature_cols = [c for c in cs_features.columns if c != "SECTOR"]
-        cross_section = {col: cs_features[col].dropna() for col in feature_cols}
-
-        # Evaluate formula → signal
-        try:
-            signal = evaluate_formula(alpha["formula"], cross_section)
-        except Exception:
-            continue
-
-        signal = _process_signal(signal)
         if len(signal) < 20:
             continue
 
@@ -116,8 +125,8 @@ def run_backtest(
         dates_out.append(str(date.date()) if hasattr(date, "date") else str(date))
 
         # Sector-level IC
-        if "SECTOR" in cs_features.columns:
-            sector_col = cs_features["SECTOR"].reindex(common)
+        try:
+            sector_col = processed_df.loc[date]["SECTOR"].reindex(common)
             for sector, grp in sector_col.groupby(sector_col):
                 if len(grp) < 5:
                     continue
@@ -128,6 +137,8 @@ def run_backtest(
                     sec_ic, _ = stats.spearmanr(grp_signal.values, grp_fwd.values)
                 if not np.isnan(sec_ic):
                     sector_ic.setdefault(sector, []).append(float(sec_ic))
+        except KeyError:
+            pass
 
         # Portfolio simulation: five quintiles (Q1=bottom, Q5=top)
         cuts = signal_aligned.quantile([0.2, 0.4, 0.6, 0.8])
@@ -150,7 +161,10 @@ def run_backtest(
             "check that the date range and features align with available data."
         )
 
-    metrics = _compute_metrics(ic_series, portfolio_returns, quintile_rets_list, top_quintile_sets, bottom_quintile_sets)
+    metrics = _compute_metrics(
+        ic_series, portfolio_returns, quintile_rets_list,
+        top_quintile_sets, bottom_quintile_sets,
+    )
 
     return BacktestResult(
         metrics=metrics,
@@ -163,15 +177,41 @@ def run_backtest(
     )
 
 
+def _processed_path(start_date: str, end_date: str) -> Path:
+    key = f"processed|{start_date}|{end_date}"
+    digest = hashlib.sha256(key.encode()).hexdigest()[:16]
+    return _DATA_DIR / f"processed_{digest}.parquet"
+
+
+def _build_raw_panel(
+    prices_df: pd.DataFrame,
+    fundamentals_ttm_df: pd.DataFrame,
+    universe_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """Merge prices, fundamentals, and universe into a (DATE, TICKER) MultiIndex panel."""
+    prices = prices_df.copy()
+    prices["DATE"] = pd.to_datetime(prices["DATE"])
+
+    fund = fundamentals_ttm_df.copy()
+    fund["DATE"] = pd.to_datetime(fund["DATE"])
+
+    panel = prices.merge(fund, on=["TICKER", "DATE"], how="left")
+
+    if "SECTOR" in universe_df.columns:
+        sector_map = universe_df.set_index("TICKER")["SECTOR"]
+        panel["SECTOR"] = panel["TICKER"].map(sector_map)
+
+    return panel.set_index(["DATE", "TICKER"])
+
+
 def _monthly_dates(
-    start_date: str, end_date: str, feature_panel: pd.DataFrame
+    start_date: str, end_date: str, panel: pd.DataFrame
 ) -> list:
-    """Return month-end dates available in the feature panel index."""
-    panel_dates = feature_panel.index.get_level_values("DATE").unique().sort_values()
+    """Return month-end dates available in the panel index."""
+    panel_dates = panel.index.get_level_values("DATE").unique().sort_values()
     monthly = pd.date_range(start=start_date, end=end_date, freq="BME")
     result = []
     for m in monthly:
-        # Snap to nearest available date
         available = panel_dates[panel_dates <= m]
         if len(available) > 0:
             result.append(available[-1])
@@ -226,24 +266,9 @@ def _compute_metrics(
     )
 
 
-def _process_signal(signal: pd.Series, winsor_pct: float = 0.01) -> pd.Series:
-    """Drop NaN, winsorize at 1%/99%, then cross-sectionally z-score."""
-    signal = signal.dropna()
-    if len(signal) < 2:
-        return signal
-    lo, hi = signal.quantile(winsor_pct), signal.quantile(1 - winsor_pct)
-    signal = signal.clip(lower=lo, upper=hi)
-    std = signal.std(ddof=1)
-    if std > 0:
-        signal = (signal - signal.mean()) / std
-    return signal
-
-
-def _compute_turnover(quintile_sets):
-    """Compute number of common elements between consecutive quintile sets."""
+def _compute_turnover(quintile_sets: list[frozenset]) -> float:
     if len(quintile_sets) < 2:
         return 0.0
-
     turnovers = []
     for prev, curr in zip(quintile_sets[:-1], quintile_sets[1:]):
         if len(prev) == 0:
@@ -254,13 +279,10 @@ def _compute_turnover(quintile_sets):
 
 
 def _compute_monotonicity(quintile_rets_list: list[list[float]]) -> float:
-    "spearman correlation between quintile number and returns, averaged over periods"
     if not quintile_rets_list:
         return 0.0
-
     quintile_ranks = [1, 2, 3, 4, 5]
     rhos = []
-
     for q_rets in quintile_rets_list:
         if len(q_rets) != 5:
             continue
@@ -269,7 +291,6 @@ def _compute_monotonicity(quintile_rets_list: list[list[float]]) -> float:
             rho, _ = stats.spearmanr(quintile_ranks, q_rets)
         if not np.isnan(rho):
             rhos.append(rho)
-
     return float(np.mean(rhos)) if rhos else 0.0
 
 
@@ -281,13 +302,7 @@ def _max_drawdown(returns: np.ndarray) -> float:
 
 
 def _deflated_sharpe(returns: np.ndarray, sharpe: float) -> float:
-    """Sharpe ratio haircut using López de Prado (2013) SR standard error.
-
-    Estimates the standard error of the Sharpe ratio corrected for non-normality
-    (skewness and kurtosis), then subtracts it as a conservative deflation.
-    A ratio of deflated_sharpe / sharpe close to 1.0 means the SR is reliable;
-    a low ratio indicates the SR is likely inflated by noise or fat tails.
-    """
+    """Sharpe ratio haircut using López de Prado (2013) SR standard error."""
     n = len(returns)
     if n < 4:
         return 0.0
@@ -296,24 +311,20 @@ def _deflated_sharpe(returns: np.ndarray, sharpe: float) -> float:
     normalised = (returns - returns.mean()) / sigma
 
     skew = float(np.mean(normalised ** 3))
-    kurt = float(np.mean(normalised ** 4))  # raw kurtosis (Gaussian ≈ 3)
+    kurt = float(np.mean(normalised ** 4))
 
-    # SR standard error under non-normality (López de Prado 2013)
     sr_var = (1 + 0.5 * sharpe ** 2 - skew * sharpe + ((kurt - 3) / 4) * sharpe ** 2) / (n - 1)
     sr_std = float(np.sqrt(max(sr_var, 0.0)))
 
     return round(float(sharpe - sr_std), 4)
 
 
-
 if __name__ == "__main__":
     import json
     import pprint
-
-    from core.types import AlphaConfig
 
     with open("experiments/sample_alpha_001.json") as f:
         config: AlphaConfig = json.load(f)
 
     result = run_backtest(config)
-    pprint.pprint(result.metrics)
+    pprint.pprint(result["metrics"])
