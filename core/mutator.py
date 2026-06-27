@@ -11,24 +11,24 @@ import re
 from datetime import datetime, timezone
 
 from core.types import AlphaConfig
-from core.formula_validator import ALLOWED_FEATURES, ALLOWED_FUNCTION_NAMES, EVALUATOR_FEATURES, validate_alpha
+from core.formula_validator import ALLOWED_FUNCTION_NAMES, AVAILABLE_RAW_COLUMNS, validate_alpha
 
 _SYSTEM_PROMPT = (
     "You are a quantitative research analyst designing alpha factors. "
     "You will be given a parent alpha experiment that failed or underperformed. "
     "Your job is to propose one specific mutation that addresses the failure mode. "
-    "Be precise and concrete. Only suggest formulas using supported operators."
+    "Be precise and concrete. Only suggest formulas using supported operators and raw data columns."
 )
 
 _SAFE_OPERATORS: frozenset[str] = ALLOWED_FUNCTION_NAMES - {"delta", "ts_mean", "ts_std"}
-_AVAILABLE_FEATURES = ", ".join(sorted(EVALUATOR_FEATURES))
 
-_FORMULA_CONSTRAINT = (
-    f"IMPORTANT — supported formula operators ONLY: {', '.join(sorted(_SAFE_OPERATORS))}() "
-    "and standard arithmetic (+, -, *, /, **). "
-    "ts_mean(), ts_std(), delta() raise NotImplementedError — never use them. "
-    f"Only use these features: {_AVAILABLE_FEATURES}."
-)
+_FORMULA_CONSTRAINT = f"""IMPORTANT — raw_formula uses raw DataFrame column names directly.
+Available columns: {', '.join(sorted(AVAILABLE_RAW_COLUMNS))}
+Allowed cross-sectional operators: {', '.join(sorted(_SAFE_OPERATORS))}()
+Pandas time-series methods (call directly on columns): .shift(n), .rolling(n).std(), .pct_change(), .diff(n)
+Standard arithmetic: +  -  *  /  **
+DO NOT use ts_mean(), ts_std(), or delta() — they raise NotImplementedError at runtime.
+Example: rank(ADJUSTED_PRICE.shift(21) / ADJUSTED_PRICE.shift(252) - 1) + 0.5 * rank(OPER_INCOME_LTM / SALES_LTM.replace(0, float('nan')))"""
 
 
 def generate_mutation(
@@ -90,8 +90,8 @@ def _build_mutation_prompt(record: dict) -> str:
 
 Parent Alpha:
 - alpha_id: {record["alpha_id"]}
-- Formula: {record["formula"]}
-- Features: {record["features"]}
+- Formula (display): {record.get("formula", "N/A")}
+- Raw formula (execution): {config.get("raw_formula", "N/A")}
 - Universe: {config.get("universe")} | Rebalance: {config.get("rebalance")} | Neutralization: {config.get("neutralization")}
 - Period: {config.get("start_date")} to {config.get("end_date")}
 
@@ -101,22 +101,19 @@ Results:
 - IC_mean: {metrics.get("IC_mean", 0):.4f}
 - ICIR: {metrics.get("ICIR", 0):.4f}
 - Sharpe: {metrics.get("Sharpe", 0):.4f}
-- Turnover: {metrics.get("turnover", 0):.1f} bps/yr
-- Sector Stability: {robustness.get("sector_stability", 0):.4f}
+- Turnover: {metrics.get("turnover", 0):.4f}
 - Subperiod Stability: {robustness.get("subperiod_stability", 0):.4f}
 
 Prior Reflection:
 {record.get("reflection", "N/A")}
-
-Available features: {_AVAILABLE_FEATURES}
 
 {_FORMULA_CONSTRAINT}
 
 Return ONLY a JSON object (no markdown, no explanation) with these fields:
 {{
   "hypothesis": "one sentence investment thesis",
-  "formula": "valid formula string",
-  "features": ["list", "of", "features", "used"],
+  "formula": "human-readable description of the signal (free text)",
+  "raw_formula": "execution formula using raw column DataFrames",
   "mutation": "one sentence describing what changed vs parent",
   "universe": "{config.get("universe", "sp500")}",
   "start_date": "{config.get("start_date", "2021-01-01")}",
@@ -142,7 +139,6 @@ def _parse_and_validate(raw: str, parent_record: dict) -> AlphaConfig:
 
     result = validate_alpha(data)
     if not result.valid:
-        # Retry: try to fix common issue — formula referencing undeclared features
         raise ValueError(f"Generated alpha failed validation: {result.errors}")
 
     return data  # type: ignore[return-value]
@@ -155,8 +151,7 @@ def _parse_and_validate(raw: str, parent_record: dict) -> AlphaConfig:
 def _rule_based_mutation(record: dict) -> AlphaConfig:
     config = record.get("config", {})
     metrics = record.get("metrics", {})
-    features: list[str] = list(record.get("features") or [])
-    formula: str = record.get("formula") or ""
+    parent_raw_formula: str = config.get("raw_formula", "rank(ADJUSTED_PRICE.pct_change().rolling(20).std()) * -1")
 
     parent_id = record["alpha_id"]
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
@@ -166,36 +161,45 @@ def _rule_based_mutation(record: dict) -> AlphaConfig:
     sharpe = metrics.get("Sharpe", 0)
     icir = metrics.get("ICIR", 0)
 
-    has_quality = any(f in features for f in ("EBITDA_MARGIN", "EBITDA_LTM", "EPS_LTM"))
-    has_momentum = any("MOM" in f for f in features)
+    # Detect what signals are already in the parent formula
+    has_quality = "OPER_INCOME_LTM" in parent_raw_formula or "NET_INCOME_LTM" in parent_raw_formula
+    has_momentum = "shift" in parent_raw_formula and "ADJUSTED_PRICE" in parent_raw_formula
 
-    if turnover > 300:
-        new_formula = formula
-        new_features = features
+    if turnover > 0.7:
+        new_raw_formula = parent_raw_formula
+        new_formula = record.get("formula", "")
         new_rebalance = "quarterly"
         mutation_desc = "Switched rebalance frequency to quarterly to reduce turnover."
         hypothesis = record.get("hypothesis", "") + " (quarterly rebalance)"
+
     elif sharpe < 0.3 and not has_quality:
-        new_features = features + ["EBITDA_MARGIN"]
-        new_formula = f"({formula}) + 0.3 * rank(EBITDA_MARGIN)"
+        quality_raw = "rank((OPER_INCOME_LTM + DA_LTM) / SALES_LTM.replace(0, float('nan')))"
+        new_raw_formula = f"({parent_raw_formula}) + 0.3 * {quality_raw}"
+        new_formula = f"{record.get('formula', '')} + 0.3 * rank(EBITDA_MARGIN)"
         new_rebalance = config.get("rebalance", "monthly")
         mutation_desc = "Added EBITDA_MARGIN quality overlay to strengthen weak signal."
         hypothesis = "Adding profitability overlay to improve signal strength."
+
     elif icir < 0.2:
-        new_features = features + ["VOL_20D"]
-        new_formula = f"({formula}) * (1 - rank(VOL_20D))"
+        vol_raw = "rank(ADJUSTED_PRICE.pct_change().rolling(20).std())"
+        new_raw_formula = f"({parent_raw_formula}) * (1 - {vol_raw})"
+        new_formula = f"({record.get('formula', '')}) * (1 - rank(VOL_20D))"
         new_rebalance = config.get("rebalance", "monthly")
-        mutation_desc = "Added low-volatility damper (1 - rank(VOL_20D)) to reduce noise."
+        mutation_desc = "Added low-volatility damper to reduce noise."
         hypothesis = "Filtering out high-volatility stocks to improve IC consistency."
+
     elif has_momentum and not has_quality:
-        new_features = features + ["EBITDA_MARGIN"]
-        new_formula = f"({formula}) + 0.3 * rank(EBITDA_MARGIN)"
+        quality_raw = "rank((OPER_INCOME_LTM + DA_LTM) / SALES_LTM.replace(0, float('nan')))"
+        new_raw_formula = f"({parent_raw_formula}) + 0.3 * {quality_raw}"
+        new_formula = f"{record.get('formula', '')} + 0.3 * rank(EBITDA_MARGIN)"
         new_rebalance = config.get("rebalance", "monthly")
-        mutation_desc = "Added quality overlay (EBITDA_MARGIN) to complement momentum."
+        mutation_desc = "Added quality overlay to complement momentum."
         hypothesis = "Quality + momentum combination to improve signal stability."
+
     else:
-        new_features = features + ["LIQUIDITY"]
-        new_formula = f"({formula}) * rank(LIQUIDITY)"
+        liquidity_raw = "rank(ADJUSTED_VOLUME * ADJUSTED_PRICE)"
+        new_raw_formula = f"({parent_raw_formula}) * {liquidity_raw}"
+        new_formula = f"({record.get('formula', '')}) * rank(LIQUIDITY)"
         new_rebalance = config.get("rebalance", "monthly")
         mutation_desc = "Added liquidity screen to concentrate in tradeable stocks."
         hypothesis = "Restricting universe to liquid stocks to reduce noise."
@@ -205,7 +209,7 @@ def _rule_based_mutation(record: dict) -> AlphaConfig:
         parent_id=parent_id,
         hypothesis=hypothesis,
         formula=new_formula,
-        features=list(set(new_features)),
+        raw_formula=new_raw_formula,
         mutation=mutation_desc,
         universe=config.get("universe", "sp500"),
         start_date=config.get("start_date", "2021-01-01"),

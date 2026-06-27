@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from core.decision import ICIR_SOFT, TURNOVER_MAX
 from core.types import ExperimentRecord, FailureCategory, MemorySummary
-from core.formula_validator import EVALUATOR_FEATURES
+from core.formula_validator import AVAILABLE_RAW_COLUMNS
 
 
 def classify_failure(record: ExperimentRecord) -> str | None:
@@ -49,7 +49,7 @@ def analyze_memory(store: "ExperimentStore") -> MemorySummary:  # noqa: F821
             failure_category_counts={},
             best_experiments=[],
             explored_features=[],
-            unexplored_features=sorted(EVALUATOR_FEATURES),
+            unexplored_features=sorted(AVAILABLE_RAW_COLUMNS),
             trend_observations=["No experiments run yet."],
         )
 
@@ -77,7 +77,7 @@ def analyze_memory(store: "ExperimentStore") -> MemorySummary:  # noqa: F821
         for r in promising[:3]
     ]
 
-    unexplored = sorted(EVALUATOR_FEATURES - explored)
+    unexplored = sorted(AVAILABLE_RAW_COLUMNS - explored)
     explored_list = sorted(explored)
 
     trend_observations = _build_trend_observations(

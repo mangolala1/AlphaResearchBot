@@ -48,11 +48,12 @@ def main() -> None:
     for i, s in enumerate(suggestions, 1):
         print(f"{'─'*60}")
         print(f"Suggestion {i}: {s['direction']}")
-        print(f"  Hypothesis : {s['hypothesis']}")
-        print(f"  Formula    : {s['formula']}")
-        print(f"  Features   : {s['features']}")
-        print(f"  Parent     : {s['parent_id'] or 'none (new branch)'}")
-        print(f"  Rationale  : {s['rationale']}")
+        print(f"  Hypothesis  : {s['hypothesis']}")
+        print(f"  Formula     : {s['formula']}")
+        print(f"  Raw formula : {s['raw_formula']}")
+        print(f"  Features    : {s['features']}")
+        print(f"  Parent      : {s['parent_id'] or 'none (new branch)'}")
+        print(f"  Rationale   : {s['rationale']}")
         print()
 
     if args.save:
@@ -69,6 +70,7 @@ def main() -> None:
                 "parent_id": s["parent_id"],
                 "hypothesis": s["hypothesis"],
                 "formula": s["formula"],
+                "raw_formula": s["raw_formula"],
                 "features": s["features"],
                 "mutation": f"Planner suggestion: {s['direction']}",
                 "universe": base.get("universe", "sp500"),

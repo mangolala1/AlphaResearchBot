@@ -88,7 +88,8 @@ class SimilarityResult(TypedDict):
 class ResearchSuggestion(TypedDict):
     direction: str
     hypothesis: str
-    formula: str
+    formula: str       # display formula — named features, shown in UI
+    raw_formula: str   # execution formula — raw column DataFrames, eval'd at runtime
     features: list[str]
     parent_id: str | None
     rationale: str

@@ -10,7 +10,9 @@ import os
 import re
 
 from core.types import AlphaConfig, MemorySummary, ResearchSuggestion
-from core.formula_validator import ALLOWED_FUNCTION_NAMES, EVALUATOR_FEATURES, validate_alpha
+from core.formula_validator import (
+    ALLOWED_FUNCTION_NAMES, AVAILABLE_RAW_COLUMNS, validate_alpha,
+)
 
 _SYSTEM_PROMPT = (
     "You are a quantitative research director reviewing a portfolio of alpha factor experiments. "
@@ -20,12 +22,18 @@ _SYSTEM_PROMPT = (
 
 _SAFE_OPERATORS: frozenset[str] = ALLOWED_FUNCTION_NAMES - {"delta", "ts_mean", "ts_std"}
 
-_FORMULA_CONSTRAINT = (
-    f"IMPORTANT — supported formula operators ONLY: {', '.join(sorted(_SAFE_OPERATORS))}() "
-    "and standard arithmetic (+, -, *, /, **). "
-    "DO NOT use ts_mean(), ts_std(), or delta() — they raise NotImplementedError at runtime. "
-    f"Supported features: {', '.join(sorted(EVALUATOR_FEATURES))}."
-)
+_FORMULA_CONSTRAINT = f"""IMPORTANT — two formula fields are required:
+
+1. `formula` (display): free-form human-readable description of the signal for the UI.
+   Example: "EBITDA margin quality + 12-month momentum, low-vol damped"
+
+2. `raw_formula` (execution): uses raw DataFrame column names directly — each column is a
+   full DATE × TICKER pandas DataFrame, so pandas methods work inline.
+   Available columns: {', '.join(sorted(AVAILABLE_RAW_COLUMNS))}
+   Allowed cross-sectional operators: {', '.join(sorted(_SAFE_OPERATORS))}()
+   Pandas time-series methods: .shift(n), .rolling(n).std(), .pct_change(), .diff(n)
+   DO NOT use ts_mean(), ts_std(), or delta() — they raise NotImplementedError at runtime.
+   Example: rank((OPER_INCOME_LTM + DA_LTM) / SALES_LTM.replace(0, float('nan'))) + 0.5 * rank(ADJUSTED_PRICE.shift(21) / ADJUSTED_PRICE.shift(252) - 1)"""
 
 
 def plan_next_research(
@@ -129,8 +137,9 @@ Return ONLY a JSON array of {n} objects (no markdown, no explanation):
   {{
     "direction": "short label (3-5 words)",
     "hypothesis": "one sentence investment thesis",
-    "formula": "valid formula string",
-    "features": ["list", "of", "features"],
+    "formula": "display formula using named feature labels",
+    "raw_formula": "execution formula using raw column DataFrames and pandas methods",
+    "features": ["list", "of", "named", "features"],
     "parent_id": "alpha_id to branch from, or null",
     "rationale": "one sentence: why this direction given prior results"
   }},
@@ -147,9 +156,16 @@ def _parse_suggestions(raw: str, summary: MemorySummary) -> list[ResearchSuggest
     for item in data:
         if not isinstance(item, dict):
             continue
+
+        raw_formula = item.get("raw_formula", "")
+        if not raw_formula:
+            print(f"  [planner] Skipping '{item.get('direction')}': missing raw_formula")
+            continue
+
         test_config = AlphaConfig(
             alpha_id=f"plan_test_{len(valid)}",
             formula=item.get("formula", ""),
+            raw_formula=raw_formula,
             features=item.get("features", []),
             universe="sp500",
             start_date="2021-01-01",
@@ -164,6 +180,7 @@ def _parse_suggestions(raw: str, summary: MemorySummary) -> list[ResearchSuggest
             direction=item.get("direction", ""),
             hypothesis=item.get("hypothesis", ""),
             formula=item.get("formula", ""),
+            raw_formula=raw_formula,
             features=item.get("features", []),
             parent_id=item.get("parent_id"),
             rationale=item.get("rationale", ""),
@@ -181,6 +198,10 @@ _FALLBACK_SUGGESTIONS: list[ResearchSuggestion] = [
         direction="value screen",
         hypothesis="Cheap stocks (low P/S) outperform expensive ones in the cross-section.",
         formula="rank(PRICE_TO_SALES) * -1",
+        raw_formula=(
+            "rank(ADJUSTED_PRICE / (SALES_LTM / SHARES_DILUTED.replace(0, float('nan')))"
+            ".replace(0, float('nan'))) * -1"
+        ),
         features=["PRICE_TO_SALES"],
         parent_id=None,
         rationale="No value-based alpha has been tested yet.",
@@ -189,6 +210,11 @@ _FALLBACK_SUGGESTIONS: list[ResearchSuggestion] = [
         direction="quality + value",
         hypothesis="High-quality cheap stocks outperform: profitable companies trading at low valuations.",
         formula="rank(EBITDA_MARGIN) + rank(PRICE_TO_SALES) * -1",
+        raw_formula=(
+            "rank((OPER_INCOME_LTM + DA_LTM) / SALES_LTM.replace(0, float('nan')))"
+            " + rank(ADJUSTED_PRICE / (SALES_LTM / SHARES_DILUTED.replace(0, float('nan')))"
+            ".replace(0, float('nan'))) * -1"
+        ),
         features=["EBITDA_MARGIN", "PRICE_TO_SALES"],
         parent_id=None,
         rationale="Combining profitability and valuation is a classic Piotroski-style factor.",
@@ -197,6 +223,10 @@ _FALLBACK_SUGGESTIONS: list[ResearchSuggestion] = [
         direction="earnings growth momentum",
         hypothesis="Companies with accelerating EPS growth attract institutional buying.",
         formula="rank(EPS_GROWTH) + 0.5 * rank(SALES_GROWTH)",
+        raw_formula=(
+            "rank(NET_INCOME_LTM / NET_INCOME_LTM.shift(252) - 1)"
+            " + 0.5 * rank(SALES_LTM / SALES_LTM.shift(252) - 1)"
+        ),
         features=["EPS_GROWTH", "SALES_GROWTH"],
         parent_id=None,
         rationale="Growth factors have not yet been tested in this experiment set.",
@@ -205,6 +235,7 @@ _FALLBACK_SUGGESTIONS: list[ResearchSuggestion] = [
         direction="low volatility",
         hypothesis="Low-volatility stocks generate better risk-adjusted returns due to investor preference for lotteries.",
         formula="rank(VOL_20D) * -1",
+        raw_formula="rank(ADJUSTED_PRICE.pct_change().rolling(20).std()) * -1",
         features=["VOL_20D"],
         parent_id=None,
         rationale="The low-vol anomaly is well-documented and unexplored here.",
@@ -213,6 +244,10 @@ _FALLBACK_SUGGESTIONS: list[ResearchSuggestion] = [
         direction="liquidity + momentum",
         hypothesis="Liquid momentum stocks outperform because they are easier to trade and attract trend-following flows.",
         formula="rank(MOM6_1) * rank(LIQUIDITY)",
+        raw_formula=(
+            "rank(ADJUSTED_PRICE.shift(21) / ADJUSTED_PRICE.shift(126) - 1)"
+            " * rank(ADJUSTED_VOLUME * ADJUSTED_PRICE)"
+        ),
         features=["MOM6_1", "LIQUIDITY"],
         parent_id=None,
         rationale="Combining liquidity with shorter-term momentum may reduce turnover vs MOM12_1.",
