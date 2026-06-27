@@ -10,7 +10,7 @@ import pandas as pd
 from scipy import stats
 
 from core.features import compute_features
-from core.formula_eval import evaluate_formula
+from core.formula_validator import evaluate_formula
 from core.types import AlphaConfig, BacktestMetrics, BacktestResult
 
 if TYPE_CHECKING:

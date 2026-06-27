@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from core.decision import ICIR_SOFT, TURNOVER_MAX
 from core.types import ExperimentRecord, FailureCategory, MemorySummary
-from core.validator import EVALUATOR_FEATURES
+from core.formula_validator import EVALUATOR_FEATURES
 
 
 def classify_failure(record: ExperimentRecord) -> str | None:

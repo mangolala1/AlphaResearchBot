@@ -10,7 +10,7 @@ import os
 import re
 
 from core.types import AlphaConfig, MemorySummary, ResearchSuggestion
-from core.validator import ALLOWED_FUNCTION_NAMES, EVALUATOR_FEATURES, validate_alpha
+from core.formula_validator import ALLOWED_FUNCTION_NAMES, EVALUATOR_FEATURES, validate_alpha
 
 _SYSTEM_PROMPT = (
     "You are a quantitative research director reviewing a portfolio of alpha factor experiments. "

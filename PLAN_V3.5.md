@@ -96,7 +96,7 @@ The rule-based fallback `_rule_based_plan` will source `tried_features` from `su
 **Fix:** Add `EVALUATOR_FEATURES` to `validator.py` (the 14 LLM-safe features, already computed inline in `mutator.py`) and derive formula constraints programmatically in both `mutator.py` and `planner.py`:
 
 ```python
-# core/validator.py — new export
+# core/formula_validator.py — new export
 EVALUATOR_FEATURES: frozenset[str] = ALLOWED_FEATURES - {
     "SECTOR", "INDUSTRY", "FACTSET_ID",
     "EPS_NTM", "SALES_NTM", "EBITDA_NTM", "COGS_NTM",

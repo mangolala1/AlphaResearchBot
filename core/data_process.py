@@ -1,12 +1,3 @@
-"""Data processing — clean, winsorise, and standardise raw data panels.
-
-Applies cross-sectional processing (per date, across all stocks) on a
-DataFrame loaded from DataLoader. Can be applied to raw fundamentals/prices
-or to a computed feature panel.
-
-Output is always a (DATE, TICKER) MultiIndex DataFrame.
-"""
-
 from __future__ import annotations
 
 import pandas as pd

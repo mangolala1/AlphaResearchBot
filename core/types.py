@@ -13,7 +13,9 @@ class AlphaConfig(TypedDict, total=False):
     alpha_id: str
     parent_id: str | None
     hypothesis: str
-    formula: str
+    formula: str       # display formula — human-readable, shown in UI (e.g. rank(MOM12_1))
+    raw_formula: str   # execution formula — uses raw column names as panel DataFrames
+                       # (e.g. rank(ADJUSTED_PRICE.shift(21) / ADJUSTED_PRICE.shift(252) - 1))
     features: list[str]
     mutation: str
     universe: str

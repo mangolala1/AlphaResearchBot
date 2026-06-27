@@ -9,28 +9,29 @@ A quick-reference guide to every Python file in `core/` and `scripts/`.
 ```
 scripts/run_experiment.py
   │
-  ├── core/validator.py          validate formula & config
-  ├── core/similarity.py         deduplicate against prior runs
-  ├── core/data_loader.py        fetch prices + fundamentals (cached)
-  │     └── core/features.py     compute derived signals
-  │           └── core/formula_eval.py   evaluate formula string
-  ├── core/backtest.py           IC, Sharpe, turnover, drawdown
-  ├── core/decision.py           tiered pass / revise / fail rules
-  ├── core/robustness.py         sector, subperiod, regime, placebo checks
-  ├── core/reflection.py         LLM explanation + next-step suggestion
-  └── core/memory.py             persist ExperimentRecord to SQLite
+  ├── core/formula_validator.py   validate config, both formula fields, build eval namespace
+  ├── core/similarity.py          deduplicate against prior runs
+  ├── core/data_loader.py         fetch prices + fundamentals TTM (cached as parquet)
+  │     └── core/data_process.py  winsorise + standardise raw panel → (DATE, TICKER)
+  │           └── core/signal_calculation.py  eval raw_formula → signal Series
+  │                 └── core/formula_validator.py  build_panel_namespace()
+  ├── core/backtest.py            IC, Sharpe, turnover, drawdown
+  ├── core/decision.py            tiered pass / revise / fail rules
+  ├── core/robustness.py          sector, subperiod, regime, placebo checks
+  ├── core/reflection.py          LLM explanation + next-step suggestion
+  └── core/memory.py              persist ExperimentRecord to SQLite
         └── core/memory_analyzer.py    aggregate summaries & failure tags
 
 scripts/mutate_alpha.py
-  └── core/mutator.py            LLM → child AlphaConfig (rule-based fallback)
+  └── core/mutator.py             LLM → child AlphaConfig (rule-based fallback)
 
 scripts/plan_next.py
-  └── core/planner.py            LLM → new research directions (rule-based fallback)
+  └── core/planner.py             LLM → new research directions (rule-based fallback)
         └── core/memory_analyzer.py
 
 scripts/export_graph.py
-  ├── core/graph.py              build NetworkX DAG from experiment store
-  └── core/visualization.py     render interactive HTML with vis-network.js
+  ├── core/graph.py               build NetworkX DAG from experiment store
+  └── core/visualization.py       render interactive HTML with vis-network.js
 ```
 
 ---
@@ -42,7 +43,7 @@ Defines all shared data contracts as `TypedDict`s and dataclasses. Nothing is co
 
 | Type | Purpose |
 |------|---------|
-| `AlphaConfig` | Input spec for one experiment (formula, features, universe, dates, etc.) |
+| `AlphaConfig` | Input spec for one experiment. Key fields: `formula` (display label, e.g. `rank(MOM12_1)`), `raw_formula` (executed expression using raw column names, e.g. `rank(ADJUSTED_PRICE.shift(21) / ADJUSTED_PRICE.shift(252) - 1)`), `universe`, `start_date`, `end_date` |
 | `BacktestMetrics` | Output metrics: IC_mean, ICIR, Sharpe, turnover, monotonicity, max_drawdown, deflated_sharpe, noise_risk |
 | `BacktestResult` | Full backtest output including IC series, portfolio returns, sector IC, and per-period signal values |
 | `RobustnessResult` | Sector stability, subperiod stability, market-regime Sharpes, placebo score |
@@ -59,61 +60,93 @@ Defines all shared data contracts as `TypedDict`s and dataclasses. Nothing is co
 ### `data_loader.py`
 Fetches raw market data and caches it locally as parquet files so remote sources are only hit once per date range.
 
-- **Prices** — `yfinance`: daily adjusted close and volume for S&P 500 tickers
-- **Fundamentals** — `SimFin` (TTM): Revenue, EBITDA, EPS, COGS. If SimFin is unavailable or the API key is missing, it returns an empty DataFrame and price-only features still work.
+- **Prices** — `yfinance`: daily adjusted close and volume for all S&P 500 tickers
+- **Fundamentals (TTM)** — `SimFin` free tier, trailing-twelve-month income + cash flow statements merged. If SimFin is unavailable the module returns an empty DataFrame and price-only formulas still work.
 - **Universe** — scraped from Wikipedia's S&P 500 list; includes ticker and GICS sector.
+
+Fundamentals pre-fetch 1 year before `start_date` to seed the forward-fill, then trim back. This ensures every stock has a non-null value on the first rebalancing date.
+
+Sparse columns (>1000 NaN rows in the raw filing data) are automatically dropped before caching.
 
 Cache key is a SHA-256 hash of `(table, start_date, end_date)`. Delete the `cache/` directory to force a fresh fetch.
 
-Output column contracts (same names used throughout `features.py` and `backtest.py`):
+Output column contracts:
 
 | DataFrame | Key columns |
 |-----------|------------|
 | `prices_df` | `TICKER`, `DATE`, `ADJUSTED_PRICE`, `ADJUSTED_VOLUME` |
-| `fundamentals_df` | `TICKER`, `DATE`, `SALES_LTM`, `COGS_LTM`, `EPS_LTM`, `EBITDA_LTM` |
+| `fundamentals_ttm_df` | `TICKER`, `DATE`, `SALES_LTM`, `COGS_LTM`, `NET_INCOME_LTM`, `SHARES_DILUTED`, `OPER_INCOME_LTM`, `DA_LTM`, `INV_CHANGE_LTM` |
 | `universe_df` | `TICKER`, `SECTOR`, `COUNTRY` |
 
 ---
 
+### `data_process.py`
+Cleans, winsorises, and standardises a raw data panel into a `(DATE, TICKER)` MultiIndex DataFrame ready for signal computation.
+
+**`process(df, value_cols, winsorise, standardise)`** — main entry point:
+1. Normalise input to `(DATE, TICKER)` MultiIndex (accepts either long-format or MultiIndex)
+2. Drop dates where every stock is NaN for a column
+3. Cross-sectional winsorisation — clip each column at 1%/99% **across stocks per date** (row-wise)
+4. Cross-sectional z-score standardisation — subtract cross-stock mean, divide by cross-stock std per date
+5. Drop `(date, ticker)` rows with any remaining NaN
+
+Internal helpers `_winsorise(wide)` and `_standardise(wide)` are also imported by `signal_calculation.py` to post-process the computed signal.
+
+Non-value metadata columns (`SECTOR`, `COUNTRY`) are carried through without modification.
+
+---
+
+### `formula_validator.py`
+Single owner of all formula-related logic: config validation, operator definitions, namespace construction, and formula evaluation. Every other module that needs to evaluate or validate a formula imports from here.
+
+**Constants:**
+
+| Name | Purpose |
+|------|---------|
+| `AVAILABLE_RAW_COLUMNS` | frozenset of raw data column names valid in `raw_formula` (e.g. `ADJUSTED_PRICE`, `SALES_LTM`) |
+| `ALLOWED_FEATURES` | Named feature labels valid in the display `formula` (e.g. `MOM12_1`, `EBITDA_MARGIN`) |
+| `EVALUATOR_FEATURES` | `ALLOWED_FEATURES` minus metadata and forward-looking fields |
+| `ALLOWED_FUNCTION_NAMES` | `rank`, `zscore`, `log`, `abs`, `sign`, `delta`, `ts_mean`, `ts_std` |
+
+**`validate_alpha(alpha)`** — validates an `AlphaConfig`, returns `ValidationResult`:
+1. Required fields — `alpha_id`, `formula`, `raw_formula`, `universe`, `start_date`, `end_date`
+2. Display formula (`formula`) — tokens must be in `ALLOWED_FEATURES` or `ALLOWED_FUNCTION_NAMES`; warns on NTM forward-looking fields
+3. Raw formula (`raw_formula`) — checks parenthesis balance, verifies at least one `AVAILABLE_RAW_COLUMNS` column is referenced, warns on unknown ALL_CAPS identifiers
+4. Universe and date ordering
+
+**`build_panel_namespace(processed_df)`** — builds the eval namespace for `raw_formula`. Each data column is pivoted to a full `DATE × TICKER` wide DataFrame so the formula can use:
+- Time-series pandas methods directly: `ADJUSTED_PRICE.shift(21)`, `.rolling(20).std()`
+- Cross-sectional operators **row-wise**: `rank(X)`, `zscore(X)`, `log(X)`, `abs(X)`, `sign(X)`
+- `np` for numpy math constants and functions
+- `delta`, `ts_mean`, `ts_std` raise `NotImplementedError` with a message directing users to pandas methods
+
+**`evaluate_formula(formula, cross_section)`** — legacy cross-sectional evaluator; takes a dict of `{feature: pd.Series}` (one value per stock) and returns a signal `pd.Series` indexed by `TICKER`. Used by `backtest.py` for the older per-date slice evaluation path.
+
+---
+
+### `signal_calculation.py`
+Execution layer for alpha signal generation. Wires `formula_validator.build_panel_namespace` and `data_process._winsorise/_standardise` together to produce the signal Series consumed by `backtest.py`.
+
+**`compute_signal(processed_df, raw_formula, post_winsorise, post_standardise)`**:
+1. Call `build_panel_namespace(processed_df)` → namespace of `DATE × TICKER` DataFrames
+2. `eval(raw_formula, namespace)` → `DATE × TICKER` signal DataFrame
+3. Apply cross-sectional winsorise + standardise to the result
+4. Stack to `(DATE, TICKER)` MultiIndex `pd.Series` named `"signal"`, drop NaNs
+
+Each `AlphaConfig` carries two formula strings:
+- `raw_formula` — executed here; uses raw column names and pandas operations (e.g. `rank(ADJUSTED_PRICE.shift(21) / ADJUSTED_PRICE.shift(252) - 1) + 0.5 * rank(OPER_INCOME_LTM / SALES_LTM)`)
+- `formula` — display only; human-readable shorthand shown in the UI (e.g. `rank(MOM12_1) + 0.5 * rank(EBITDA_MARGIN)`); never evaluated here
+
+---
+
 ### `features.py`
-Transforms raw price and fundamental DataFrames into a `(DATE, TICKER)` MultiIndex panel of alpha features. Only the features listed in the alpha config's `features` field are computed.
+Legacy feature computation module. Computes named intermediate feature panels from raw price and fundamental DataFrames. Still used by `backtest.py` via `compute_features()` for the older feature-based pipeline path.
 
-| Feature | Description |
-|---------|-------------|
-| `MOM12_1` | 12-month price return excluding the last month (skip-1 momentum) |
-| `MOM6_1` | 6-month price return excluding the last month |
-| `VOL_20D` | 20-day rolling annualised volatility of log returns |
-| `LIQUIDITY` | 20-day rolling average dollar volume |
-| `EBITDA_MARGIN` | EBITDA / Revenue (LTM) |
-| `SALES_GROWTH` | Year-over-year sales growth |
-| `EPS_GROWTH` | Year-over-year EPS growth |
-| `PRICE_TO_SALES` | Price relative to sales (cross-sectional proxy) |
+**`compute_features(prices_df, fundamentals_ttm_df, universe_df, feature_names)`** — returns a `(DATE, TICKER)` MultiIndex DataFrame. Only the features listed in `feature_names` are computed. After each feature is computed, cross-sectional winsorisation is applied (except for `ADJUSTED_PRICE` and `ADJUSTED_VOLUME`).
 
-All derived features are winsorised at the 1%/99% level to reduce outlier noise. Raw columns (`ADJUSTED_PRICE`, `ADJUSTED_VOLUME`, `EPS_LTM`, etc.) are passed through directly if requested.
+Raw fundamental columns available as pass-throughs: `SALES_LTM`, `COGS_LTM`, `NET_INCOME_LTM`, `SHARES_DILUTED`, `OPER_INCOME_LTM`, `DA_LTM`, `INV_CHANGE_LTM`.
 
----
-
-### `formula_eval.py`
-Sandboxed evaluator for formula strings. Formulas run inside `eval()` with `__builtins__` disabled and a restricted namespace of cross-sectional operators.
-
-**Allowed operators:** `rank()`, `zscore()`, `log()`, `abs()`, `sign()`
-
-**Blocked operators:** `delta()`, `ts_mean()`, `ts_std()` — these require time-series context and raise `NotImplementedError` with a clear message.
-
-Standard arithmetic (`+`, `-`, `*`, `/`, `**`) and parentheses work as expected. The input is a dict of `{feature_name: pd.Series}` one value per stock. The output is a signal `pd.Series` indexed by `TICKER`.
-
----
-
-### `validator.py`
-Validates an `AlphaConfig` before any computation runs. Returns a `ValidationResult` with lists of errors (blocking) and warnings (non-blocking).
-
-Checks performed:
-1. **Required fields** — `alpha_id`, `formula`, `features`, `universe`, `start_date`, `end_date`
-2. **Feature allowlist** — every feature must be in `ALLOWED_FEATURES`; NTM (forward-looking) features produce a warning
-3. **Formula tokens** — every identifier in the formula must be a known feature or allowed operator
-4. **Feature/formula consistency** — warns if features are declared but not in the formula or vice versa
-5. **Universe** — must be one of `sp500`, `russell1000`, `russell3000`
-6. **Date ordering** — `start_date` must be before `end_date`, both in `YYYY-MM-DD` format
+Derived features computed here: `EPS_LTM` (Net Income / Shares), `EBITDA_LTM` (Operating Income + D&A), `EBITDA_MARGIN`, `NET_MARGIN`, `MOM12_1`, `MOM6_1`, `SALES_GROWTH`, `EPS_GROWTH`, `PRICE_TO_SALES`, `VOL_20D`, `LIQUIDITY`.
 
 ---
 
@@ -122,11 +155,10 @@ Core simulation engine. Runs a monthly-rebalanced long-short backtest and return
 
 **Pipeline per rebalancing period:**
 1. Pull the cross-section of features at each month-end date
-2. Evaluate the formula via `formula_eval.py` → signal
-3. Winsorise and z-score the signal
-4. Compute Spearman IC against next-month forward returns
-5. Split into quintiles; simulate Q5 − Q1 long-short portfolio return
-6. Compute per-sector IC (for robustness)
+2. Evaluate the formula via `signal_calculation.py` → signal
+3. Compute Spearman IC against next-month forward returns
+4. Split into quintiles; simulate Q5 − Q1 long-short portfolio return
+5. Compute per-sector IC (for robustness)
 
 **Metrics computed:**
 - `IC_mean` and `ICIR` (IC / IC std)
@@ -134,10 +166,10 @@ Core simulation engine. Runs a monthly-rebalanced long-short backtest and return
 - `monotonicity` (avg Spearman rho between quintile rank and quintile return)
 - `turnover` (avg constituent replacement rate in top/bottom quintiles)
 - `max_drawdown`
-- `deflated_sharpe` (Sharpe adjusted for multiple testing)
+- `deflated_sharpe` (López de Prado SR adjusted for skewness and kurtosis)
 - `noise_risk` (`low` / `medium` / `high` based on deflated/raw Sharpe ratio)
 
-Raises `RuntimeError` if fewer than 3 valid periods are produced (e.g., date range too short or feature data missing).
+Raises `RuntimeError` if fewer than 3 valid periods are produced (e.g. date range too short or feature data missing).
 
 ---
 
@@ -274,14 +306,15 @@ Node and edge data are serialised as JSON and embedded directly in the HTML so t
 **Main end-to-end pipeline.** Accepts a JSON config file and runs the full experiment in seven labelled steps:
 
 ```
-Step 1   Validate formula and config
-Step 1.5 Similarity check against prior alphas
-Step 2   Backtest (data load + signal + IC + portfolio)
-Step 3   Tier 1 decision (predictive power)
-Step 4   Robustness checks (sector, subperiod, regime, placebo)
-Step 5   Tier 2 decision (implementation)
-Step 6   Generate LLM reflection
-Step 7   Save ExperimentRecord to SQLite
+Step 1   Validate formula and config       (formula_validator.py)
+Step 1.5 Similarity check                  (similarity.py)
+Step 2   Load + process data               (data_loader.py → data_process.py)
+Step 3   Compute signal                    (signal_calculation.py)
+Step 4   Backtest                          (backtest.py)
+Step 5   Tier 1 + Tier 2 decision          (decision.py)
+Step 6   Robustness checks                 (robustness.py)
+Step 7   Generate LLM reflection           (reflection.py)
+Step 8   Save ExperimentRecord to SQLite   (memory.py)
 ```
 
 **Usage:**

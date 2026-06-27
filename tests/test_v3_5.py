@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 
 from core.types import ExperimentRecord, BacktestMetrics, RobustnessResult
 from core.memory_analyzer import classify_failure, analyze_memory
-from core.validator import EVALUATOR_FEATURES, ALLOWED_FUNCTION_NAMES
+from core.formula_validator import EVALUATOR_FEATURES, ALLOWED_FUNCTION_NAMES
 
 
 def _make_record(
@@ -170,7 +170,7 @@ class TestValidatorConstants(unittest.TestCase):
         self.assertEqual(len(EVALUATOR_FEATURES), 14)
 
     def test_evaluator_features_excludes_internal(self):
-        for f in ("SECTOR", "INDUSTRY", "FACTSET_ID", "EPS_NTM", "SALES_NTM"):
+        for f in ("SECTOR", "INDUSTRY", "TICKER", "EPS_NTM", "SALES_NTM"):
             self.assertNotIn(f, EVALUATOR_FEATURES)
 
     def test_safe_operators_excludes_unimplemented(self):

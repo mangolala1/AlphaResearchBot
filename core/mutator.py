@@ -11,7 +11,7 @@ import re
 from datetime import datetime, timezone
 
 from core.types import AlphaConfig
-from core.validator import ALLOWED_FEATURES, ALLOWED_FUNCTION_NAMES, EVALUATOR_FEATURES, validate_alpha
+from core.formula_validator import ALLOWED_FEATURES, ALLOWED_FUNCTION_NAMES, EVALUATOR_FEATURES, validate_alpha
 
 _SYSTEM_PROMPT = (
     "You are a quantitative research analyst designing alpha factors. "

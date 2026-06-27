@@ -26,7 +26,7 @@ from core.reflection import generate_reflection
 from core.robustness import run_robustness
 from core.similarity import check_similarity
 from core.types import ExperimentRecord
-from core.validator import validate_alpha
+from core.formula_validator import validate_alpha
 
 
 def main() -> None:
