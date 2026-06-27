@@ -129,10 +129,15 @@ def _placebo_score(
     ic_series: list[float],
     forward_returns: list[float],
     signal_values: list[list[float]],
+    n_shuffles: int = 100,
 ) -> float:
-    """For each month, shuffle that month's forward returns, compute IC against
-    that month's signal, collect placebo ICs, then average.
-    Score = 1 - mean_placebo_IC / real_IC_mean (higher = real IC is well above chance)."""
+    """Placebo test: shuffle forward returns and compute IC against the real signal.
+
+    For each period, `n_shuffles` independent permutations are drawn and their
+    absolute ICs are averaged, giving a stable per-period placebo IC. The final
+    score is 1 - mean(placebo_IC) / mean(real_IC); higher means real IC is well
+    above chance.
+    """
     if not forward_returns or not signal_values:
         return 0.5
 
@@ -153,11 +158,17 @@ def _placebo_score(
         if n < 5:
             continue
 
-        shuffled = rng.permutation(period_rets)
-        with np.errstate(invalid="ignore"):
-            ic_val, _ = stats.spearmanr(sig, shuffled)
-        if not np.isnan(ic_val):
-            placebo_ics.append(abs(float(ic_val)))
+        # Average IC over n_shuffles permutations for this period
+        period_placebo: list[float] = []
+        for _ in range(n_shuffles):
+            shuffled = rng.permutation(period_rets)
+            with np.errstate(invalid="ignore"):
+                ic_val, _ = stats.spearmanr(sig, shuffled)
+            if not np.isnan(ic_val):
+                period_placebo.append(abs(float(ic_val)))
+
+        if period_placebo:
+            placebo_ics.append(float(np.mean(period_placebo)))
 
     if not placebo_ics:
         return 0.5
