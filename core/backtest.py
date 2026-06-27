@@ -2,28 +2,19 @@
 
 from __future__ import annotations
 
-import hashlib
 import warnings
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
 from scipy import stats
 
-from core.data_process import process as process_data
+from core.data_process import _DATA_DIR, process as process_data, processed_path
 from core.signal_calculation import compute_signal
 from core.types import AlphaConfig, BacktestMetrics, BacktestResult
 
 if TYPE_CHECKING:
     from core.data_loader import DataLoader
-
-_FUND_COLS = [
-    "SALES_LTM", "COGS_LTM", "NET_INCOME_LTM", "SHARES_DILUTED",
-    "OPER_INCOME_LTM", "DA_LTM", "INV_CHANGE_LTM",
-]
-
-_DATA_DIR = Path("data")
 
 
 def run_backtest(
@@ -39,26 +30,46 @@ def run_backtest(
     end_date = alpha["end_date"]
     no_cache = getattr(data_loader, "_no_cache", False)
 
-    prices_df, fundamentals_ttm_df, universe_df = data_loader.load(start_date, end_date)
+    prices_df, income_ttm_df, cashflow_ttm_df, universe_df = data_loader.load(start_date, end_date)
 
-    # Load processed panel from data/ if available; otherwise build and save it
-    processed_path = _processed_path(start_date, end_date)
-    if not no_cache and processed_path.exists():
-        print(f"[Backtest] Loading processed panel from {processed_path}")
-        processed_df = pd.read_parquet(processed_path)
+    _DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Process and cache income statement
+    income_path = processed_path("income", start_date, end_date)
+    if not no_cache and income_path.exists():
+        print(f"[Backtest] Loading processed income from {income_path}")
+        processed_income = pd.read_parquet(income_path)
     else:
-        raw_panel = _build_raw_panel(prices_df, fundamentals_ttm_df, universe_df)
+        processed_income = process_data(income_ttm_df)
+        processed_income.to_parquet(income_path)
+        print(f"[Backtest] Saved processed income to {income_path}")
 
-        fund_cols = [c for c in _FUND_COLS if c in raw_panel.columns]
-        processed_df = process_data(raw_panel, value_cols=fund_cols)
+    # Process and cache cash flow statement
+    cashflow_path = processed_path("cashflow", start_date, end_date)
+    if not no_cache and cashflow_path.exists():
+        print(f"[Backtest] Loading processed cashflow from {cashflow_path}")
+        processed_cashflow = pd.read_parquet(cashflow_path)
+    else:
+        processed_cashflow = process_data(cashflow_ttm_df)
+        processed_cashflow.to_parquet(cashflow_path)
+        print(f"[Backtest] Saved processed cashflow to {cashflow_path}")
 
-        # Join raw price columns back — not standardised, used in momentum ratios
-        price_mi = raw_panel[["ADJUSTED_PRICE", "ADJUSTED_VOLUME"]].reindex(processed_df.index)
-        processed_df = processed_df.join(price_mi)
+    # Join income + cashflow on (DATE, TICKER) index; drop any accidental duplicate columns
+    processed_df = processed_income.join(processed_cashflow, how="outer", rsuffix="_dup")
+    processed_df = processed_df.drop(
+        columns=[c for c in processed_df.columns if c.endswith("_dup")]
+    )
 
-        _DATA_DIR.mkdir(parents=True, exist_ok=True)
-        processed_df.to_parquet(processed_path)
-        print(f"[Backtest] Saved processed panel to {processed_path}")
+    # Add SECTOR from universe
+    if "SECTOR" in universe_df.columns:
+        sector_map = universe_df.set_index("TICKER")["SECTOR"]
+        processed_df["SECTOR"] = processed_df.index.get_level_values("TICKER").map(sector_map)
+
+    # Join raw price columns back — not standardised, used in momentum/ratio formulas
+    prices = prices_df.copy()
+    prices["DATE"] = pd.to_datetime(prices["DATE"])
+    price_mi = prices.set_index(["DATE", "TICKER"])[["ADJUSTED_PRICE", "ADJUSTED_VOLUME"]]
+    processed_df = processed_df.join(price_mi)
 
     # Compute full signal panel over the entire date range at once
     signal_series = compute_signal(processed_df, alpha["raw_formula"])
@@ -176,32 +187,6 @@ def run_backtest(
         signal_values=all_signal_values,
     )
 
-
-def _processed_path(start_date: str, end_date: str) -> Path:
-    key = f"processed|{start_date}|{end_date}"
-    digest = hashlib.sha256(key.encode()).hexdigest()[:16]
-    return _DATA_DIR / f"processed_{digest}.parquet"
-
-
-def _build_raw_panel(
-    prices_df: pd.DataFrame,
-    fundamentals_ttm_df: pd.DataFrame,
-    universe_df: pd.DataFrame,
-) -> pd.DataFrame:
-    """Merge prices, fundamentals, and universe into a (DATE, TICKER) MultiIndex panel."""
-    prices = prices_df.copy()
-    prices["DATE"] = pd.to_datetime(prices["DATE"])
-
-    fund = fundamentals_ttm_df.copy()
-    fund["DATE"] = pd.to_datetime(fund["DATE"])
-
-    panel = prices.merge(fund, on=["TICKER", "DATE"], how="left")
-
-    if "SECTOR" in universe_df.columns:
-        sector_map = universe_df.set_index("TICKER")["SECTOR"]
-        panel["SECTOR"] = panel["TICKER"].map(sector_map)
-
-    return panel.set_index(["DATE", "TICKER"])
 
 
 def _monthly_dates(

@@ -100,9 +100,9 @@ Results:
 - Noise Risk: {metrics["noise_risk"]}
 
 Robustness:
-- Sector Stability: {robustness["sector_stability"]:.4f}
+- Sector IC (mean per sector): {", ".join(f"{s}: {v:.3f}" for s, v in robustness["sector_stability"].items()) or "N/A"}
 - Subperiod Stability: {robustness["subperiod_stability"]:.4f}
-- Market Regime Sharpe: {robustness["market_regime_sharpe"]:.4f}
+- Market Regime Sharpe: {", ".join(f"{r}: {v:.3f}" for r, v in robustness["market_regime_sharpe"].items()) or "N/A"}
 - Placebo Score: {robustness["placebo_score"]:.4f}
 """
 
@@ -177,10 +177,11 @@ def _possible_explanation(
             "High rebalancing frequency combined with momentum features may be generating "
             "excessive churn. Consider extending the holding period or dampening the signal."
         )
-    if robustness["sector_stability"] == 0.0:
+    sector_ics = robustness["sector_stability"]
+    if sector_ics and all(v < 0 for v in sector_ics.values()):
         return (
-            "Zero sector stability suggests the signal only works in a subset of sectors "
-            "and lacks the breadth needed for a robust factor."
+            "Negative IC across all sectors suggests the signal direction may be inverted "
+            "or the factor lacks breadth needed for a robust alpha."
         )
     if robustness["subperiod_stability"] == 0.0:
         return (

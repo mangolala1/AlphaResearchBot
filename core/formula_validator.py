@@ -37,7 +37,7 @@ ALLOWED_FUNCTION_NAMES: set[str] = {
     "rank", "zscore", "log", "abs", "sign", "delta", "ts_mean", "ts_std",
 }
 
-ALLOWED_UNIVERSES: set[str] = {"sp500", "russell1000", "russell3000"}
+ALLOWED_UNIVERSES: set[str] = {"sp500"}
 
 REQUIRED_KEYS: list[str] = [
     "alpha_id", "raw_formula", "universe", "start_date", "end_date",
@@ -113,7 +113,9 @@ def build_panel_namespace(processed_df: pd.DataFrame) -> dict:
         "delta":   _ts_error,
         "ts_mean": _ts_error,
         "ts_std":  _ts_error,
-        "np": np,
+        "np":    np,
+        "float": float,
+        "nan":   float("nan"),
     }
 
     data_cols = [c for c in processed_df.columns if c not in _NON_DATA_COLS]

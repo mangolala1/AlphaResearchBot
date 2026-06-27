@@ -9,13 +9,13 @@ A quick-reference guide to every Python file in `core/` and `scripts/`.
 ```
 scripts/run_experiment.py
   │
-  ├── core/formula_validator.py   validate config, both formula fields, build eval namespace
+  ├── core/formula_validator.py   validate config, raw_formula, build eval namespace
   ├── core/similarity.py          deduplicate against prior runs
-  ├── core/data_loader.py         fetch prices + fundamentals TTM (cached as parquet)
-  │     └── core/data_process.py  winsorise + standardise raw panel → (DATE, TICKER)
-  │           └── core/signal_calculation.py  eval raw_formula → signal Series
-  │                 └── core/formula_validator.py  build_panel_namespace()
-  ├── core/backtest.py            IC, Sharpe, turnover, drawdown
+  ├── core/data_loader.py         fetch prices / income TTM / cashflow TTM (cached separately in cache/)
+  │     └── core/backtest.py      process each statement separately → data/; join → signal
+  │           ├── core/data_process.py   rename + winsorise + standardise + ffill → (DATE, TICKER)
+  │           └── core/signal_calculation.py   eval raw_formula → signal Series
+  │                 └── core/formula_validator.py   build_panel_namespace()
   ├── core/decision.py            tiered pass / revise / fail rules
   ├── core/robustness.py          sector, subperiod, regime, placebo checks
   ├── core/reflection.py          LLM explanation + next-step suggestion
@@ -60,39 +60,53 @@ Defines all shared data contracts as `TypedDict`s and dataclasses. Nothing is co
 ### `data_loader.py`
 Fetches raw market data and caches it locally as parquet files so remote sources are only hit once per date range.
 
-- **Prices** — `yfinance`: daily adjusted close and volume for all S&P 500 tickers
-- **Fundamentals (TTM)** — `SimFin` free tier, trailing-twelve-month income + cash flow statements merged. If SimFin is unavailable the module returns an empty DataFrame and price-only formulas still work.
+- **Prices** — `yfinance`: daily adjusted close and volume for all S&P 500 tickers.
+- **Income TTM** — `SimFin` free tier, trailing-twelve-month income statement. Cached independently as `cache/income_ttm_*.parquet`.
+- **Cashflow TTM** — `SimFin` free tier, trailing-twelve-month cash flow statement. Cached independently as `cache/cashflow_ttm_*.parquet`.
 - **Universe** — scraped from Wikipedia's S&P 500 list; includes ticker and GICS sector.
 
-Fundamentals pre-fetch 1 year before `start_date` to seed the forward-fill, then trim back. This ensures every stock has a non-null value on the first rebalancing date.
+Income and cashflow are **never merged** here — each statement is fetched, cleaned, and cached separately. The merge happens downstream in `backtest.py` after both have been processed.
 
-Sparse columns (>1000 NaN rows in the raw filing data) are automatically dropped before caching.
+Each SimFin statement goes through the same `_fetch_simfin_TTM` → `_prefetch_and_ffill` pipeline:
+1. Load from SimFin, filter to S&P 500 tickers
+2. Rename only `Ticker → TICKER` and `Publish Date → DATE` (all further renaming is done in `data_process.py`)
+3. Drop SimFin metadata columns (`Fiscal Year`, `Fiscal Period`, `Currency`, `Report Date`, `Restated Date`, `SimFinId`)
+4. Drop sparse columns (>1000 NaN rows)
+5. Pre-fetch 1 year before `start_date` to seed the forward-fill, forward-fill to business-day frequency, trim back to `start_date`
 
-Cache key is a SHA-256 hash of `(table, start_date, end_date)`. Delete the `cache/` directory to force a fresh fetch.
+Cache key is a SHA-256 hash of `(table, start_date, end_date)`. Delete `cache/` to force a fresh fetch.
 
-Output column contracts:
+`load()` returns a **4-tuple**: `(prices_df, income_ttm_df, cashflow_ttm_df, universe_df)`.
 
 | DataFrame | Key columns |
 |-----------|------------|
 | `prices_df` | `TICKER`, `DATE`, `ADJUSTED_PRICE`, `ADJUSTED_VOLUME` |
-| `fundamentals_ttm_df` | `TICKER`, `DATE`, `SALES_LTM`, `COGS_LTM`, `NET_INCOME_LTM`, `SHARES_DILUTED`, `OPER_INCOME_LTM`, `DA_LTM`, `INV_CHANGE_LTM` |
+| `income_ttm_df` | `TICKER`, `DATE`, original SimFin income column names (renamed in `data_process.py`) |
+| `cashflow_ttm_df` | `TICKER`, `DATE`, original SimFin cashflow column names (renamed in `data_process.py`) |
 | `universe_df` | `TICKER`, `SECTOR`, `COUNTRY` |
 
 ---
 
 ### `data_process.py`
-Cleans, winsorises, and standardises a raw data panel into a `(DATE, TICKER)` MultiIndex DataFrame ready for signal computation.
+Cleans, winsorises, standardises, and forward-fills a single SimFin statement into a `(DATE, TICKER)` MultiIndex DataFrame. Called separately for income and cashflow — statements are never merged here.
 
-**`process(df, value_cols, winsorise, standardise)`** — main entry point:
-1. Normalise input to `(DATE, TICKER)` MultiIndex (accepts either long-format or MultiIndex)
-2. Drop dates where every stock is NaN for a column
-3. Cross-sectional winsorisation — clip each column at 1%/99% **across stocks per date** (row-wise)
-4. Cross-sectional z-score standardisation — subtract cross-stock mean, divide by cross-stock std per date
-5. Drop `(date, ticker)` rows with any remaining NaN
+**`processed_path(statement, start_date, end_date) → Path`** — returns `data/processed_{statement}_{hash}.parquet`. Canonical cache location for processed output; shared by `backtest.py` and the `__main__` block.
 
-Internal helpers `_winsorise(wide)` and `_standardise(wide)` are also imported by `signal_calculation.py` to post-process the computed signal.
+**`process(df, value_cols, winsorise, standardise, ffill_daily)`** — main entry point:
+1. Apply `_COLUMN_RENAMES` — maps original SimFin names (e.g. `"Revenue"`) to standardised identifiers (e.g. `REVENUE_LTM`)
+2. Sanitise any remaining non-standard column names (spaces/special chars → underscores, uppercased) via `_sanitize_col()`
+3. Normalise to `(DATE, TICKER)` MultiIndex
+4. Drop dates where every stock is NaN for a column
+5. Cross-sectional winsorisation — clip at 1%/99% **across stocks per date**
+6. Cross-sectional z-score standardisation — subtract cross-stock mean, divide by cross-stock std per date
+7. Drop `(date, ticker)` rows with any remaining NaN in value columns
+8. Forward-fill to business-day frequency via `_ffill_to_daily()`
 
-Non-value metadata columns (`SECTOR`, `COUNTRY`) are carried through without modification.
+`_COLUMN_RENAMES` covers all income and cashflow SimFin column names. `_NON_VALUE_COLS = {"SECTOR", "COUNTRY"}` are carried through unchanged. `_PRICE_COLS = {"ADJUSTED_PRICE", "ADJUSTED_VOLUME"}` are excluded from winsorisation/standardisation.
+
+`_DATA_DIR = Path("data")` — module-level constant imported by `backtest.py` so processed parquets always go to the same location.
+
+Run `python core/data_process.py` to manually process both statements from cache, save to `data/`, and print shape, columns, date range, NaN counts, and a sample.
 
 ---
 
@@ -103,24 +117,22 @@ Single owner of all formula-related logic: config validation, operator definitio
 
 | Name | Purpose |
 |------|---------|
-| `AVAILABLE_RAW_COLUMNS` | frozenset of raw data column names valid in `raw_formula` (e.g. `ADJUSTED_PRICE`, `SALES_LTM`) |
-| `ALLOWED_FEATURES` | Named feature labels valid in the display `formula` (e.g. `MOM12_1`, `EBITDA_MARGIN`) |
-| `EVALUATOR_FEATURES` | `ALLOWED_FEATURES` minus metadata and forward-looking fields |
+| `AVAILABLE_RAW_COLUMNS` | frozenset of 8 raw column names valid in `raw_formula`: `ADJUSTED_PRICE`, `ADJUSTED_VOLUME`, `SALES_LTM`, `COGS_LTM`, `NET_INCOME_LTM`, `OPER_INCOME_LTM`, `DA_LTM`, `SHARES_DILUTED` |
 | `ALLOWED_FUNCTION_NAMES` | `rank`, `zscore`, `log`, `abs`, `sign`, `delta`, `ts_mean`, `ts_std` |
 
+`ALLOWED_FEATURES`, `EVALUATOR_FEATURES`, and `FUTURE_LOOKING_FIELDS` have been removed — the formula system is fully raw-column-based.
+
 **`validate_alpha(alpha)`** — validates an `AlphaConfig`, returns `ValidationResult`:
-1. Required fields — `alpha_id`, `formula`, `raw_formula`, `universe`, `start_date`, `end_date`
-2. Display formula (`formula`) — tokens must be in `ALLOWED_FEATURES` or `ALLOWED_FUNCTION_NAMES`; warns on NTM forward-looking fields
-3. Raw formula (`raw_formula`) — checks parenthesis balance, verifies at least one `AVAILABLE_RAW_COLUMNS` column is referenced, warns on unknown ALL_CAPS identifiers
+1. Required fields: `alpha_id`, `raw_formula`, `universe`, `start_date`, `end_date`
+2. `raw_formula` — checks parenthesis balance, verifies at least one `AVAILABLE_RAW_COLUMNS` column is referenced, warns on unknown ALL_CAPS identifiers
+3. `formula` is optional (display label only, never validated or evaluated)
 4. Universe and date ordering
 
-**`build_panel_namespace(processed_df)`** — builds the eval namespace for `raw_formula`. Each data column is pivoted to a full `DATE × TICKER` wide DataFrame so the formula can use:
-- Time-series pandas methods directly: `ADJUSTED_PRICE.shift(21)`, `.rolling(20).std()`
-- Cross-sectional operators **row-wise**: `rank(X)`, `zscore(X)`, `log(X)`, `abs(X)`, `sign(X)`
-- `np` for numpy math constants and functions
-- `delta`, `ts_mean`, `ts_std` raise `NotImplementedError` with a message directing users to pandas methods
-
-**`evaluate_formula(formula, cross_section)`** — legacy cross-sectional evaluator; takes a dict of `{feature: pd.Series}` (one value per stock) and returns a signal `pd.Series` indexed by `TICKER`. Used by `backtest.py` for the older per-date slice evaluation path.
+**`build_panel_namespace(processed_df)`** — builds the eval namespace for `raw_formula`. Each column of `processed_df` is pivoted to a full `DATE × TICKER` wide DataFrame. The namespace also includes:
+- `float` and `nan` — explicitly whitelisted so `float('nan')` works inside the sandboxed eval
+- Cross-sectional operators: `rank(X)`, `zscore(X)`, `log(X)`, `abs(X)`, `sign(X)`
+- `np` for numpy math
+- `delta`, `ts_mean`, `ts_std` raise `NotImplementedError` directing users to pandas methods
 
 ---
 
@@ -140,14 +152,22 @@ Each `AlphaConfig` carries two formula strings:
 ---
 
 ### `backtest.py`
-Core simulation engine. Runs a monthly-rebalanced long-short backtest and returns both summary metrics and intermediate data needed for robustness checks.
+Core simulation engine. Orchestrates data processing, signal computation, and the monthly-rebalanced long-short simulation.
 
-**Pipeline per rebalancing period:**
-1. Pull the cross-section of features at each month-end date
-2. Evaluate the formula via `signal_calculation.py` → signal
-3. Compute Spearman IC against next-month forward returns
-4. Split into quintiles; simulate Q5 − Q1 long-short portfolio return
-5. Compute per-sector IC (for robustness)
+**Data pipeline (run once per `(start_date, end_date)`):**
+1. Unpack 4-tuple from `data_loader.load()` → `prices_df`, `income_ttm_df`, `cashflow_ttm_df`, `universe_df`
+2. Process income statement independently via `data_process.process()` → cache to `data/processed_income_*.parquet`
+3. Process cashflow statement independently via `data_process.process()` → cache to `data/processed_cashflow_*.parquet`
+4. Outer-join processed income + cashflow on `(DATE, TICKER)` index
+5. Add `SECTOR` from universe and raw `ADJUSTED_PRICE` / `ADJUSTED_VOLUME` from prices
+
+**Signal and backtest pipeline per rebalancing period:**
+1. Evaluate `raw_formula` via `signal_calculation.py` over the full date range at once → signal Series
+2. At each month-end rebalancing date, slice signal and compute Spearman IC against next-month forward returns
+3. Split into quintiles; simulate Q5 − Q1 long-short portfolio return
+4. Compute per-sector IC (for robustness)
+
+Cache paths come from `data_process.processed_path(statement, start_date, end_date)`. `--no-cache` skips the processed parquet cache and rebuilds from the raw `cache/` files.
 
 **Metrics computed:**
 - `IC_mean` and `ICIR` (IC / IC std)
@@ -158,7 +178,7 @@ Core simulation engine. Runs a monthly-rebalanced long-short backtest and return
 - `deflated_sharpe` (López de Prado SR adjusted for skewness and kurtosis)
 - `noise_risk` (`low` / `medium` / `high` based on deflated/raw Sharpe ratio)
 
-Raises `RuntimeError` if fewer than 3 valid periods are produced (e.g. date range too short or feature data missing).
+Raises `RuntimeError` if fewer than 3 valid periods are produced.
 
 ---
 
