@@ -175,3 +175,37 @@ def _placebo_score(
 
     score = 1.0 - np.mean(placebo_ics) / real_ic_mean
     return float(np.clip(score, 0.0, 1.0))
+
+
+if __name__ == "__main__":
+    import json
+    import pprint
+
+    from core.backtest import run_backtest
+
+    with open("experiments/sample_alpha_001.json") as f:
+        alpha = json.load(f)
+
+    # raw_formula is required by the backtest pipeline; add one matching the
+    # display formula if the JSON predates the two-formula system.
+    if "raw_formula" not in alpha:
+        alpha["raw_formula"] = (
+            "rank((OPER_INCOME_LTM + DA_LTM) / SALES_LTM.replace(0, float('nan'))) "
+            "+ 0.5 * rank(ADJUSTED_PRICE.shift(21) / ADJUSTED_PRICE.shift(252) - 1)"
+        )
+
+    print("Running backtest...")
+    result = run_backtest(alpha)
+
+    print(f"\nReal IC mean : {float(np.mean(result['ic_series'])):.4f}")
+    print(f"Periods      : {len(result['ic_series'])}")
+    print(f"Total stocks : {sum(len(s) for s in result['signal_values'])}")
+
+    print("\nRunning robustness (placebo with 100 shuffles/period)...")
+    rob = run_robustness(alpha, result)
+
+    print(f"\nPlacebo score : {rob['placebo_score']}")
+    print("(1.0 = real IC far above chance, 0.0 = indistinguishable from random)\n")
+
+    print("Full robustness result:")
+    pprint.pprint(rob)
