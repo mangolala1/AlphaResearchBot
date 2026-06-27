@@ -53,10 +53,22 @@ AVAILABLE_RAW_COLUMNS: frozenset[str] = frozenset({
     "NET_CHANGE_CASH_LTM",
 })
 
-# Function names the LLM may use in a raw_formula.
-# delta/ts_mean/ts_std are time-series operators available in the panel namespace.
+# All operator names available in the panel eval namespace.
 ALLOWED_FUNCTION_NAMES: set[str] = {
-    "rank", "zscore", "log", "abs", "sign", "delta", "ts_mean", "ts_std",
+    # Cross-sectional (operate across tickers per date)
+    "rank", "zscore", "sign", "log", "abs", "scale",
+    "tanh", "sigmoid", "exp", "sqrt",
+    "power", "sign_power", "max", "min", "clip", "where",
+    "group_rank", "group_zscore", "indneutralize",
+    # Time-series (operate along date axis per ticker)
+    "delta", "ts_delta", "ts_shift",
+    "ts_mean", "ts_std", "ts_max", "ts_min", "ts_sum",
+    "ts_rank", "ts_argmax", "ts_argmin",
+    "ts_corr", "ts_cov", "ts_av_diff", "ts_zscore",
+    "decay_linear", "product",
+    # Technical indicators
+    "ema", "sma", "wma", "rsi", "macd",
+    "boll_upper", "boll_lower", "boll_mid",
 }
 
 ALLOWED_UNIVERSES: set[str] = {"sp500"}
@@ -112,29 +124,118 @@ def validate_alpha(alpha: AlphaConfig) -> ValidationResult:
 # Panel namespace — used by signal_calculation.compute_signal
 # ---------------------------------------------------------------------------
 
+# --- operator helpers -------------------------------------------------------
+
+def _cs_zscore(df: pd.DataFrame) -> pd.DataFrame:
+    mu = df.mean(axis=1)
+    sigma = df.std(axis=1, ddof=1).replace(0, float("nan")).fillna(1.0) + 1e-9
+    return df.sub(mu, axis=0).div(sigma, axis=0)
+
+def _cs_scale(df: pd.DataFrame) -> pd.DataFrame:
+    lo = df.min(axis=1)
+    hi = df.max(axis=1)
+    rng = (hi - lo).replace(0, float("nan"))
+    return df.sub(lo, axis=0).div(rng, axis=0)
+
+def _ts_rank(df: pd.DataFrame, n: int) -> pd.DataFrame:
+    return df.rolling(n).apply(
+        lambda x: pd.Series(x).rank(pct=True).iloc[-1], raw=True
+    )
+
+def _decay_linear(df: pd.DataFrame, n: int) -> pd.DataFrame:
+    w = np.arange(1, n + 1, dtype=float); w /= w.sum()
+    return df.rolling(n).apply(lambda x: (x * w).sum(), raw=True)
+
+def _rsi(df: pd.DataFrame, n: int) -> pd.DataFrame:
+    d = df.diff()
+    gain = d.clip(lower=0).ewm(com=n - 1, min_periods=n).mean()
+    loss = (-d).clip(lower=0).ewm(com=n - 1, min_periods=n).mean()
+    rs = gain / loss.replace(0, float("nan"))
+    return 100 - (100 / (1 + rs))
+
+def _macd(df: pd.DataFrame, n: int) -> pd.DataFrame:
+    fast = df.ewm(span=max(n // 2, 1), adjust=False).mean()
+    slow = df.ewm(span=n, adjust=False).mean()
+    line = fast - slow
+    return line - line.ewm(span=max(n // 4, 1), adjust=False).mean()
+
+def _group_rank(col: pd.DataFrame, group: pd.DataFrame) -> pd.DataFrame:
+    col_s = col.stack(future_stack=True)
+    grp_s = group.stack(future_stack=True).reindex(col_s.index)
+    ranked = col_s.groupby([col_s.index.get_level_values(0), grp_s]).rank(pct=True)
+    return ranked.unstack()
+
+def _group_zscore(col: pd.DataFrame, group: pd.DataFrame) -> pd.DataFrame:
+    col_s = col.stack(future_stack=True)
+    grp_s = group.stack(future_stack=True).reindex(col_s.index)
+    zs = col_s.groupby([col_s.index.get_level_values(0), grp_s]).transform(
+        lambda x: (x - x.mean()) / (x.std() + 1e-9)
+    )
+    return zs.unstack()
+
+def _where(cond: pd.DataFrame, t, f) -> pd.DataFrame:
+    c = cond.astype(bool)
+    tv = t.values if hasattr(t, "values") else t
+    fv = f.values if hasattr(f, "values") else f
+    return pd.DataFrame(np.where(c.values, tv, fv), index=c.index, columns=c.columns)
+
+# ---------------------------------------------------------------------------
+
 def build_panel_namespace(processed_df: pd.DataFrame) -> dict:
     """Build the eval namespace for raw_formula evaluation.
 
-    Each raw data column in processed_df is pivoted to a DATE × TICKER wide
-    DataFrame, so the formula can use:
-      - Time-series pandas methods directly: ADJUSTED_PRICE.shift(21)
-      - Cross-sectional operators row-wise:  rank(ADJUSTED_PRICE.shift(21) / ...)
+    Each data column is pivoted to a DATE × TICKER wide DataFrame so formulas
+    can use pandas time-series methods and the operators defined below.
     """
     ns: dict = {
-        "rank":   lambda df: df.rank(axis=1, pct=True),
-        "zscore": lambda df: (
-            df.sub(df.mean(axis=1), axis=0)
-            .div(
-                df.std(axis=1, ddof=1).replace(0, float("nan")).fillna(1.0) + 1e-9,
-                axis=0,
-            )
-        ),
-        "log":    lambda df: np.log(df.clip(lower=1e-9)),
-        "abs":    lambda df: df.abs(),
-        "sign":   lambda df: np.sign(df),
-        "delta":   lambda df, n: df.diff(n),
-        "ts_mean": lambda df, n: df.rolling(n).mean(),
-        "ts_std":  lambda df, n: df.rolling(n).std(),
+        # --- cross-sectional (row-wise across tickers per date) ---
+        "rank":         lambda df: df.rank(axis=1, pct=True),
+        "zscore":       _cs_zscore,
+        "sign":         lambda df: np.sign(df),
+        "log":          lambda df: np.log(df.clip(lower=1e-9)),
+        "abs":          lambda df: df.abs(),
+        "scale":        _cs_scale,
+        "tanh":         lambda df: np.tanh(df),
+        "sigmoid":      lambda df: 1.0 / (1.0 + np.exp(-df.clip(-500, 500))),
+        "exp":          lambda df: np.exp(df.clip(upper=500)),
+        "sqrt":         lambda df: df.clip(lower=0).pow(0.5),
+        "power":        lambda base, exp: base ** exp,
+        "sign_power":   lambda base, exp: np.sign(base) * (base.abs() ** exp),
+        "max":          lambda a, b: np.maximum(a, b),
+        "min":          lambda a, b: np.minimum(a, b),
+        "clip":         lambda df, lo, hi: df.clip(lower=lo, upper=hi),
+        "where":        _where,
+        "group_rank":   _group_rank,
+        "group_zscore": _group_zscore,
+        "indneutralize": _group_zscore,
+        # --- time-series (column-wise along date axis per ticker) ---
+        "delta":        lambda df, n: df.diff(n),
+        "ts_delta":     lambda df, n: df.diff(n),
+        "ts_shift":     lambda df, n: df.shift(n),
+        "ts_mean":      lambda df, n: df.rolling(n).mean(),
+        "ts_std":       lambda df, n: df.rolling(n).std(),
+        "ts_max":       lambda df, n: df.rolling(n).max(),
+        "ts_min":       lambda df, n: df.rolling(n).min(),
+        "ts_sum":       lambda df, n: df.rolling(n).sum(),
+        "ts_rank":      _ts_rank,
+        "ts_argmax":    lambda df, n: df.rolling(n).apply(lambda x: float(np.argmax(x)), raw=True),
+        "ts_argmin":    lambda df, n: df.rolling(n).apply(lambda x: float(np.argmin(x)), raw=True),
+        "ts_corr":      lambda df1, df2, n: df1.rolling(n).corr(df2),
+        "ts_cov":       lambda df1, df2, n: df1.rolling(n).cov(df2),
+        "decay_linear": _decay_linear,
+        "product":      lambda df, n: df.rolling(n).apply(np.prod, raw=True),
+        "ts_av_diff":   lambda df, n: df - df.rolling(n).mean(),
+        "ts_zscore":    lambda df, n: (df - df.rolling(n).mean()) / (df.rolling(n).std() + 1e-9),
+        # --- technical indicators ---
+        "ema":          lambda df, n: df.ewm(span=n, adjust=False).mean(),
+        "sma":          lambda df, n: df.rolling(n).mean(),
+        "wma":          _decay_linear,
+        "rsi":          _rsi,
+        "macd":         _macd,
+        "boll_upper":   lambda df, n: df.rolling(n).mean() + 2 * df.rolling(n).std(),
+        "boll_lower":   lambda df, n: df.rolling(n).mean() - 2 * df.rolling(n).std(),
+        "boll_mid":     lambda df, n: df.rolling(n).mean(),
+        # --- python builtins ---
         "np":    np,
         "float": float,
         "nan":   float("nan"),
@@ -143,6 +244,10 @@ def build_panel_namespace(processed_df: pd.DataFrame) -> dict:
     data_cols = [c for c in processed_df.columns if c not in _NON_DATA_COLS]
     for col in data_cols:
         ns[col] = processed_df[col].unstack(level="TICKER")
+
+    # Make SECTOR available for group_rank / group_zscore / indneutralize
+    if "SECTOR" in processed_df.columns:
+        ns["SECTOR"] = processed_df["SECTOR"].unstack(level="TICKER")
 
     return ns
 

@@ -21,14 +21,29 @@ _SYSTEM_PROMPT = (
 )
 
 _FORMULA_CONSTRAINT = f"""IMPORTANT — raw_formula uses raw DataFrame column names directly.
+Each column is a full DATE × TICKER pandas DataFrame.
 Available columns: {', '.join(sorted(AVAILABLE_RAW_COLUMNS))}
-Cross-sectional operators (operate across tickers per date): {', '.join(sorted(ALLOWED_FUNCTION_NAMES))}()
-  - rank(X), zscore(X), log(X), abs(X), sign(X) — standard cross-sectional ops
-  - delta(X, n)   — change over n periods: X.diff(n)
-  - ts_mean(X, n) — rolling mean over n periods
-  - ts_std(X, n)  — rolling std over n periods
-Pandas time-series methods (call directly on columns): .shift(n), .rolling(n).mean(), .pct_change()
+
+Cross-sectional operators (across tickers per date):
+  rank(X)  zscore(X)  sign(X)  log(X)  abs(X)  scale(X)  tanh(X)  sigmoid(X)  exp(X)  sqrt(X)
+  power(X, n)  sign_power(X, n)  max(A, B)  min(A, B)  clip(X, lo, hi)  where(cond, t, f)
+  group_rank(X, SECTOR)  group_zscore(X, SECTOR)  indneutralize(X, SECTOR)
+
+Time-series operators (along date axis per ticker):
+  ts_mean(X, n)  ts_std(X, n)  ts_max(X, n)  ts_min(X, n)  ts_sum(X, n)
+  ts_shift(X, n)  ts_delta(X, n)  delta(X, n)
+  ts_rank(X, n)  ts_argmax(X, n)  ts_argmin(X, n)
+  ts_corr(X, Y, n)  ts_cov(X, Y, n)
+  decay_linear(X, n)  product(X, n)
+  ts_av_diff(X, n)  ts_zscore(X, n)
+
+Technical indicators:
+  ema(X, n)  sma(X, n)  wma(X, n)  rsi(X, n)  macd(X, n)
+  boll_upper(X, n)  boll_lower(X, n)  boll_mid(X, n)
+
+Pandas methods work inline: X.shift(n)  X.pct_change()  X.diff(n)  X.rolling(n).mean()
 Standard arithmetic: +  -  *  /  **
+All fundamental columns are TTM (trailing twelve months), not point-in-time — do NOT treat them as quarterly snapshots.
 All fundamental columns are already clean with no NaN values — do NOT use .fillna() or .replace()."""
 
 
