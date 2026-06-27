@@ -2,7 +2,7 @@
 
 ### Data Issues
 SimFin provides data for past 7 years, so my start date right now is set to 2021-01-01 to avoid missing data.
-Try: Databento
+- Changed the data interval to 2021-01-01 to 2026-06-01. Using 2024-12-31 to 2026-06-01 for testing.
 
 ### Data Processing
 - Add checks for missing data and handle them gracefully (e.g., skip, impute, or flag).

@@ -153,7 +153,7 @@ def _parse_suggestions(raw: str, summary: MemorySummary) -> list[ResearchSuggest
             features=item.get("features", []),
             universe="sp500",
             start_date="2021-01-01",
-            end_date="2024-12-31",
+            end_date="2026-06-01",
         )
         result = validate_alpha(test_config)
         if not result.valid:

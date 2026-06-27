@@ -12,7 +12,7 @@ def evaluate_formula(
 ) -> pd.Series:
     """Evaluate a formula string against a dict of feature Series (one per stock).
 
-    Returns a signal Series indexed by FACTSET_ID.
+    Returns a signal Series indexed by TICKER.
     Raises ValueError if the formula references unknown identifiers.
     Raises NotImplementedError if time-series operators (delta, ts_mean, ts_std) are used.
     """

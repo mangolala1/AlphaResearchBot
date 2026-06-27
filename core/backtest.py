@@ -30,11 +30,11 @@ def run_backtest(
     end_date = alpha["end_date"]
 
     # Load raw data (cached after first run)
-    prices_df, fundamentals_df, universe_df = data_loader.load(start_date, end_date)
+    prices_df, fundamentals_ttm_df, universe_df = data_loader.load(start_date, end_date)
 
     # Compute derived features
     feature_panel = compute_features(
-        prices_df, fundamentals_df, universe_df, alpha.get("features", [])
+        prices_df, fundamentals_ttm_df, universe_df, alpha.get("features", [])
     )
 
     # Generate monthly rebalancing dates
@@ -44,7 +44,7 @@ def run_backtest(
     price_pivot = prices_df.copy()
     price_pivot["DATE"] = pd.to_datetime(price_pivot["DATE"])
     price_pivot = price_pivot.pivot_table(
-        index="DATE", columns="FACTSET_ID", values="ADJUSTED_PRICE"
+        index="DATE", columns="TICKER", values="ADJUSTED_PRICE"
     )
 
     ic_series: list[float] = []
@@ -281,9 +281,28 @@ def _max_drawdown(returns: np.ndarray) -> float:
 
 
 def _deflated_sharpe(returns: np.ndarray, sharpe: float) -> float:
-    """Sharpe ratio discounted for multiple testing (deflated Sharpe)."""
+    """Sharpe ratio haircut using López de Prado (2013) SR standard error.
 
-    pass
+    Estimates the standard error of the Sharpe ratio corrected for non-normality
+    (skewness and kurtosis), then subtracts it as a conservative deflation.
+    A ratio of deflated_sharpe / sharpe close to 1.0 means the SR is reliable;
+    a low ratio indicates the SR is likely inflated by noise or fat tails.
+    """
+    n = len(returns)
+    if n < 4:
+        return 0.0
+
+    sigma = returns.std(ddof=1) + 1e-9
+    normalised = (returns - returns.mean()) / sigma
+
+    skew = float(np.mean(normalised ** 3))
+    kurt = float(np.mean(normalised ** 4))  # raw kurtosis (Gaussian ≈ 3)
+
+    # SR standard error under non-normality (López de Prado 2013)
+    sr_var = (1 + 0.5 * sharpe ** 2 - skew * sharpe + ((kurt - 3) / 4) * sharpe ** 2) / (n - 1)
+    sr_std = float(np.sqrt(max(sr_var, 0.0)))
+
+    return round(float(sharpe - sr_std), 4)
 
 
 

@@ -10,32 +10,33 @@ _WINSOR_HIGH = 0.99
 
 _RAW_PRICE_COLS = {"ADJUSTED_PRICE", "ADJUSTED_VOLUME"}
 _RAW_FUNDAMENTAL_COLS = {
-    "EPS_LTM", "SALES_LTM", "EBITDA_LTM", "COGS_LTM",
+    "SALES_LTM", "COGS_LTM", "NET_INCOME_LTM", "SHARES_DILUTED",
+    "INV_CHANGE_LTM", "OPER_INCOME_LTM", "DA_LTM",
 }
-_RAW_UNIVERSE_COLS = {"SECTOR", "INDUSTRY", "FACTSET_ID"}
+_RAW_UNIVERSE_COLS = {"SECTOR", "INDUSTRY", "TICKER"}
 
 
 def compute_features(
     prices_df: pd.DataFrame,
-    fundamentals_df: pd.DataFrame,
+    fundamentals_ttm_df: pd.DataFrame,
     universe_df: pd.DataFrame,
     feature_names: list[str],
 ) -> pd.DataFrame:
-    """Compute requested features and return a MultiIndex (DATE, FACTSET_ID) DataFrame.
+    """Compute requested features and return a MultiIndex (DATE, TICKER) DataFrame.
 
     Only the features listed in feature_names are computed.
     Stocks with NaN values for a feature on a given date are included with NaN
     (the backtest engine will drop them from that period's cross-section).
     """
     prices_df = _normalise_dates(prices_df)
-    fundamentals_df = _normalise_dates(fundamentals_df)
+    fundamentals_df = _normalise_dates(fundamentals_ttm_df)
 
-    # Build a price pivot: rows=DATE, cols=FACTSET_ID
+    # Build a price pivot: rows=DATE, cols=TICKER
     price_pivot = prices_df.pivot_table(
-        index="DATE", columns="FACTSET_ID", values="ADJUSTED_PRICE"
+        index="DATE", columns="TICKER", values="ADJUSTED_PRICE"
     )
     volume_pivot = prices_df.pivot_table(
-        index="DATE", columns="FACTSET_ID", values="ADJUSTED_VOLUME"
+        index="DATE", columns="TICKER", values="ADJUSTED_VOLUME"
     )
 
     # Build fundamentals pivots for each column
@@ -43,11 +44,11 @@ def compute_features(
     for col in _RAW_FUNDAMENTAL_COLS:
         if col in fundamentals_df.columns:
             fund_pivots[col] = fundamentals_df.pivot_table(
-                index="DATE", columns="FACTSET_ID", values=col
+                index="DATE", columns="TICKER", values=col
             )
 
     # Universe metadata (static, no date dimension)
-    universe_meta = universe_df.set_index("FACTSET_ID") if "FACTSET_ID" in universe_df.columns else universe_df
+    universe_meta = universe_df.set_index("TICKER") if "TICKER" in universe_df.columns else universe_df
 
     feature_panels: dict[str, pd.DataFrame] = {}
 
@@ -56,6 +57,8 @@ def compute_features(
             feat, price_pivot, volume_pivot, fund_pivots, universe_meta
         )
         if panel is not None:
+            if feat not in {"ADJUSTED_PRICE", "ADJUSTED_VOLUME"}:
+                panel = _winsorise(panel)
             feature_panels[feat] = panel
 
     if not feature_panels:
@@ -65,7 +68,7 @@ def compute_features(
     long_frames = []
     for feat_name, panel in feature_panels.items():
         long = panel.stack(future_stack=True).rename(feat_name)
-        long.index.names = ["DATE", "FACTSET_ID"]
+        long.index.names = ["DATE", "TICKER"]
         long_frames.append(long)
 
     result = pd.concat(long_frames, axis=1)
@@ -73,7 +76,7 @@ def compute_features(
     # Attach SECTOR if universe has it (needed for robustness sector_ic)
     if "SECTOR" in universe_meta.columns:
         sector_map = universe_meta["SECTOR"]
-        result["SECTOR"] = result.index.get_level_values("FACTSET_ID").map(sector_map)
+        result["SECTOR"] = result.index.get_level_values("TICKER").map(sector_map)
 
     return result
 
@@ -85,7 +88,7 @@ def _compute_single_feature(
     fund_pivots: dict[str, pd.DataFrame],
     universe_meta: pd.DataFrame,
 ) -> pd.DataFrame | None:
-    """Return a wide DataFrame (DATE × FACTSET_ID) for a single feature, or None if unsupported."""
+    """Return a wide DataFrame (DATE × TICKER) for a single feature, or None if unsupported."""
 
     # Raw pass-through
     if name == "ADJUSTED_PRICE":
@@ -95,41 +98,58 @@ def _compute_single_feature(
     if name in _RAW_FUNDAMENTAL_COLS:
         return fund_pivots.get(name)
 
-    # Derived features
-    if name == "EBITDA_MARGIN":
-        ebitda = fund_pivots.get("EBITDA_LTM")
-        sales = fund_pivots.get("SALES_LTM")
-        if ebitda is None or sales is None:
+    # Derived features — computed from raw columns
+    if name == "EPS_LTM":
+        net_income = fund_pivots.get("NET_INCOME_LTM")
+        shares = fund_pivots.get("SHARES_DILUTED")
+        if net_income is None or shares is None:
             return None
-        raw = ebitda / sales.replace(0, np.nan)
-        return _winsorise(raw)
+        return net_income / shares.replace(0, np.nan)
+
+    if name == "EBITDA_LTM":
+        oper_income = fund_pivots.get("OPER_INCOME_LTM")
+        da = fund_pivots.get("DA_LTM")
+        if oper_income is None:
+            return None
+        return oper_income + (da.fillna(0) if da is not None else 0)
+
+    if name == "EBITDA_MARGIN":
+        oper_income = fund_pivots.get("OPER_INCOME_LTM")
+        da = fund_pivots.get("DA_LTM")
+        sales = fund_pivots.get("SALES_LTM")
+        if oper_income is None or sales is None:
+            return None
+        ebitda = oper_income + (da.fillna(0) if da is not None else 0)
+        return ebitda / sales.replace(0, np.nan)
 
     if name == "MOM12_1":
         # 12-month return excluding last month: price[t-21] / price[t-252] - 1
-        return _winsorise(price_pivot.shift(21) / price_pivot.shift(252) - 1)
+        return price_pivot.shift(21) / price_pivot.shift(252) - 1
 
     if name == "MOM6_1":
-        return _winsorise(price_pivot.shift(21) / price_pivot.shift(126) - 1)
+        return price_pivot.shift(21) / price_pivot.shift(126) - 1
 
     if name == "SALES_GROWTH":
         sales = fund_pivots.get("SALES_LTM")
         if sales is None:
             return None
-        return _winsorise(sales / sales.shift(252).replace(0, np.nan) - 1)
+        return sales / sales.shift(252).replace(0, np.nan) - 1
 
     if name == "EPS_GROWTH":
-        eps = fund_pivots.get("EPS_LTM")
-        if eps is None:
+        net_income = fund_pivots.get("NET_INCOME_LTM")
+        shares = fund_pivots.get("SHARES_DILUTED")
+        if net_income is None or shares is None:
             return None
-        return _winsorise(eps / eps.shift(252).replace(0, np.nan) - 1)
+        eps = net_income / shares.replace(0, np.nan)
+        return eps / eps.shift(252).replace(0, np.nan) - 1
 
     if name == "PRICE_TO_SALES":
         sales = fund_pivots.get("SALES_LTM")
-        if sales is None:
+        shares = fund_pivots.get("SHARES_DILUTED")
+        if sales is None or shares is None:
             return None
-        # Simple proxy: price / (sales_LTM scaled to per-share equivalent is unknown,
-        # so we use price / sales_LTM_millions as a relative cross-sectional signal)
-        return _winsorise(price_pivot / (sales / 1e6).replace(0, np.nan))
+        sales_per_share = sales / shares.replace(0, np.nan)
+        return price_pivot / sales_per_share.replace(0, np.nan)
 
     if name == "VOL_20D":
         log_returns = np.log(price_pivot / price_pivot.shift(1))
@@ -138,6 +158,21 @@ def _compute_single_feature(
     if name == "LIQUIDITY":
         dollar_vol = price_pivot * volume_pivot
         return dollar_vol.rolling(20).mean()
+
+    if name == "NET_MARGIN":
+        net_income = fund_pivots.get("NET_INCOME_LTM")
+        sales = fund_pivots.get("SALES_LTM")
+        if net_income is None or sales is None:
+            return None
+        return net_income / sales.replace(0, np.nan)
+
+    if name == "INV_CHANGE_LTM":
+        inv_change = fund_pivots.get("INV_CHANGE_LTM")
+        if inv_change is None:
+            return None
+        # Positive = inventory drawn down (demand > supply, bullish signal)
+        # Negative = inventory build-up (excess supply, bearish signal)
+        return inv_change
 
     return None
 
@@ -149,6 +184,10 @@ def _winsorise(df: pd.DataFrame) -> pd.DataFrame:
         upper=df.quantile(_WINSOR_HIGH),
         axis=1,
     )
+
+def _standardise(df: pd.DataFrame) -> pd.DataFrame:
+    """Apply ross-sectional standardization on pivot table where each column is a stock."""
+    return (df - df.mean()) / (df.std(ddof=1) + 1e-9)
 
 
 def _normalise_dates(df: pd.DataFrame) -> pd.DataFrame:

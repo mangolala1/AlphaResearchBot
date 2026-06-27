@@ -4,7 +4,9 @@ An agentic system for autonomous quantitative alpha research on US equities.
 
 ## Motivation
 
-Quantitative alpha research is fundamentally an iterative process: form a hypothesis, build a signal, backtest it, diagnose why it failed, and try again. In practice this loop is slow and manual. A researcher might spend days writing a signal, running a backtest, and interpreting the output — only to discover the alpha had excessive turnover or an inconsistent IC across sectors. Then they start over.
+1. Quantitative alpha research is fundamentally an **iterative process**: form a hypothesis, build a signal, backtest it, diagnose why it failed, and try again. In practice this loop is slow and manual. A researcher might spend days writing a signal, running a backtest, and interpreting the output — only to discover the alpha had excessive turnover or an inconsistent IC across sectors. Then they start over.
+
+2. The **search space is enormous**, and most signals are dead ends. A researcher might try hundreds of combinations of features, weights, and rebalance frequencies before finding a signal that works. By storing every experiment and its verdict, the system can avoid re-testing near-duplicate alphas, learn which types of signals fail in which ways, and generate next steps that are grounded in evidence rather than intuition alone.
 
 The core insight behind this project is that most of that loop can be automated. The hypothesis-to-verdict pipeline is well-defined enough to codify, and the "what went wrong and what should I try next" question is exactly the kind of reasoning that LLMs are good at. If you can close the loop — so that a failed experiment automatically informs the next one — you get a research process that compounds on itself rather than restarting from scratch each time.
 

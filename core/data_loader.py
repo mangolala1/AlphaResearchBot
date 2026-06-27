@@ -24,9 +24,9 @@ class DataLoader:
     Returns DataFrames with the same column contract as the previous
     Snowflake-backed version so that features.py and backtest.py are unchanged:
 
-      prices_df      : FACTSET_ID, DATE, ADJUSTED_PRICE, ADJUSTED_VOLUME
-      fundamentals_df: FACTSET_ID, DATE, SALES_LTM, EBITDA_LTM, EPS_LTM, COGS_LTM
-      universe_df    : FACTSET_ID, SECTOR, COUNTRY
+      prices_df          : TICKER, DATE, ADJUSTED_PRICE, ADJUSTED_VOLUME
+      fundamentals_ttm_df: TICKER, DATE, SALES_LTM, COGS_LTM, NET_INCOME_LTM, SHARES_DILUTED, OPER_INCOME_LTM, DA_LTM, ...
+      universe_df        : TICKER, SECTOR, COUNTRY
 
     Results are cached as parquet files so remote sources are only queried once
     per (start_date, end_date) pair. Delete the cache/ directory to force a
@@ -43,13 +43,13 @@ class DataLoader:
         start_date: str,
         end_date: str,
     ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-        """Return (prices_df, fundamentals_df, universe_df).
+        """Return (prices_df, fundamentals_ttm_df, universe_df).
 
         Fetches from yfinance + SimFin on first call for a given date range;
         reads parquet cache on subsequent calls unless no_cache=True.
         """
         prices_path = self._cache_path("prices", start_date, end_date)
-        fund_path = self._cache_path("fundamentals", start_date, end_date)
+        fund_path = self._cache_path("fundamentals_ttm", start_date, end_date)
         univ_path = self._cache_path("universe", start_date, end_date)
 
         need_prices = self._no_cache or not prices_path.exists()
@@ -67,17 +67,17 @@ class DataLoader:
         universe_df = self._fetch_universe()
         universe_df.to_parquet(univ_path, index=False)
 
-        tickers = universe_df["FACTSET_ID"].tolist()
+        tickers = universe_df["TICKER"].tolist()
 
         print(f"[DataLoader] Fetching prices from yfinance for {len(tickers)} tickers...")
         prices_df = self._fetch_prices(tickers, start_date, end_date)
         prices_df.to_parquet(prices_path, index=False)
 
         print("[DataLoader] Fetching fundamentals from SimFin...")
-        fundamentals_df = self._fetch_fundamentals(tickers, start_date, end_date)
-        fundamentals_df.to_parquet(fund_path, index=False)
+        fundamentals_ttm_df = self._fetch_fundamentals_TTM(tickers, start_date, end_date)
+        fundamentals_ttm_df.to_parquet(fund_path, index=False)
 
-        return prices_df, fundamentals_df, universe_df
+        return prices_df, fundamentals_ttm_df, universe_df
 
     # ------------------------------------------------------------------
     # Private fetch methods
@@ -97,7 +97,7 @@ class DataLoader:
             html = resp.read()
         df = pd.read_html(io.BytesIO(html))[0][["Symbol", "GICS Sector"]]
         df["Symbol"] = df["Symbol"].str.replace(".", "-", regex=False)
-        df = df.rename(columns={"Symbol": "FACTSET_ID", "GICS Sector": "SECTOR"})
+        df = df.rename(columns={"Symbol": "TICKER", "GICS Sector": "SECTOR"})
         df["COUNTRY"] = "US"
         return df.reset_index(drop=True)
 
@@ -132,32 +132,31 @@ class DataLoader:
 
             close = close_wide.stack(future_stack=True).reset_index()
             volume = volume_wide.stack(future_stack=True).reset_index()
-            close.columns = ["DATE", "FACTSET_ID", "ADJUSTED_PRICE"]
-            volume.columns = ["DATE", "FACTSET_ID", "ADJUSTED_VOLUME"]
+            close.columns = ["DATE", "TICKER", "ADJUSTED_PRICE"]
+            volume.columns = ["DATE", "TICKER", "ADJUSTED_VOLUME"]
         else:
             # Single ticker
             ticker = tickers[0]
             close = raw[["Close"]].reset_index().rename(
                 columns={"index": "DATE", "Date": "DATE", "Close": "ADJUSTED_PRICE"}
             )
-            close["FACTSET_ID"] = ticker
+            close["TICKER"] = ticker
             volume = raw[["Volume"]].reset_index().rename(
                 columns={"index": "DATE", "Date": "DATE", "Volume": "ADJUSTED_VOLUME"}
             )
-            volume["FACTSET_ID"] = ticker
+            volume["TICKER"] = ticker
 
-        prices_df = close.merge(volume, on=["DATE", "FACTSET_ID"]).dropna(
+        prices_df = close.merge(volume, on=["DATE", "TICKER"]).dropna(
             subset=["ADJUSTED_PRICE", "ADJUSTED_VOLUME"]
         )
         prices_df["DATE"] = pd.to_datetime(prices_df["DATE"])
         return prices_df.reset_index(drop=True)
 
-    def _fetch_fundamentals(
+
+    def _fetch_fundamentals_TTM(
         self, tickers: list[str], start_date: str, end_date: str
     ) -> pd.DataFrame:
-        _EMPTY = pd.DataFrame(
-            columns=["FACTSET_ID", "DATE", "SALES_LTM", "COGS_LTM", "EPS_LTM", "EBITDA_LTM"]
-        )
+        _EMPTY = pd.DataFrame(columns=["TICKER", "DATE"])
 
         try:
             import simfin as sf
@@ -177,59 +176,71 @@ class DataLoader:
             cashflow = cashflow[cashflow["Ticker"].isin(sp500_simfin)]
 
             join_keys = ["Ticker", "Fiscal Year", "Fiscal Period"]
-            # Only keep D&A from cashflow to avoid column conflicts
-            cf_cols = join_keys + ["Depreciation & Amortization"]
-            # Keep only columns that exist
-            cf_cols = [c for c in cf_cols if c in cashflow.columns]
 
-            merged = income.merge(cashflow[cf_cols], on=join_keys, how="left")
-
-            merged["EBITDA_LTM"] = (
-                merged.get("Operating Income (Loss)", pd.Series(0, index=merged.index)).fillna(0)
-                + merged.get("Depreciation & Amortization", pd.Series(0, index=merged.index)).fillna(0)
+            # Keep all cashflow columns. Drop from income any column that also
+            # appears in cashflow (excluding join keys) to avoid duplicates.
+            cf_extra = set(cashflow.columns) - set(join_keys)
+            income_clean = income.drop(
+                columns=[c for c in income.columns if c in cf_extra]
             )
+            merged = income_clean.merge(cashflow, on=join_keys, how="left")
 
             merged = merged.rename(
                 columns={
-                    "Ticker": "FACTSET_ID",
+                    "Ticker": "TICKER",
                     "Publish Date": "DATE",
                     "Revenue": "SALES_LTM",
                     "Cost of Revenue": "COGS_LTM",
-                    "EPS Diluted": "EPS_LTM",
+                    "Net Income": "NET_INCOME_LTM",
+                    "Shares (Diluted)": "SHARES_DILUTED",
+                    "Change in Inventories": "INV_CHANGE_LTM",
+                    "Operating Income (Loss)": "OPER_INCOME_LTM",
+                    "Depreciation & Amortization": "DA_LTM",
                 }
             )
 
-            merged["FACTSET_ID"] = merged["FACTSET_ID"].str.replace(".", "-", regex=False)
+            merged["TICKER"] = merged["TICKER"].str.replace(".", "-", regex=False)
 
-            needed = ["FACTSET_ID", "DATE", "SALES_LTM", "COGS_LTM", "EPS_LTM", "EBITDA_LTM"]
-            # Keep only columns that exist after rename
-            needed = [c for c in needed if c in merged.columns]
-            fund = merged[needed].dropna(subset=["DATE"])
+            fund = merged.dropna(subset=["DATE"])
             fund["DATE"] = pd.to_datetime(fund["DATE"])
+
+            # Drop columns that are too sparse to be useful, missing >1000 rows of data (total 6000 rows of data)
+            non_key = [c for c in fund.columns if c not in ("TICKER", "DATE")]
+            sparse_cols = [c for c in non_key if fund[c].isna().sum() > 1000]
+            if sparse_cols:
+                print(f"  [DataLoader] Dropping {len(sparse_cols)} sparse columns (>1000 NaN): {sparse_cols}")
+            fund = fund.drop(columns=sparse_cols)
+
+            # Pre-fetch 1 year before start_date so every stock has at least one
+            # publish date before the backtest begins.
+            prefetch_start = (
+                pd.Timestamp(start_date) - pd.DateOffset(years=1)
+            ).strftime("%Y-%m-%d")
             fund = fund[
-                (fund["DATE"] >= pd.Timestamp(start_date))
+                (fund["DATE"] >= pd.Timestamp(prefetch_start))
                 & (fund["DATE"] <= pd.Timestamp(end_date))
             ]
 
-            # Forward-fill each ticker's fundamentals to every trading day
-            trading_days = pd.bdate_range(start=start_date, end=end_date)
-            value_cols = [c for c in needed if c not in ("FACTSET_ID", "DATE")]
+            # Forward-fill over the extended window, then trim back to start_date.
+            trading_days = pd.bdate_range(start=prefetch_start, end=end_date)
+            value_cols = [c for c in fund.columns if c not in ("TICKER", "DATE")]
 
-            fund_indexed = fund.set_index(["FACTSET_ID", "DATE"])[value_cols]
-            # Drop duplicate (ticker, date) entries, keeping the latest
+            fund_indexed = fund.set_index(["TICKER", "DATE"])[value_cols]
             fund_indexed = fund_indexed[~fund_indexed.index.duplicated(keep="last")]
 
-            all_tickers = fund_indexed.index.get_level_values("FACTSET_ID").unique()
+            all_tickers = fund_indexed.index.get_level_values("TICKER").unique()
             full_idx = pd.MultiIndex.from_product(
-                [all_tickers, trading_days], names=["FACTSET_ID", "DATE"]
+                [all_tickers, trading_days], names=["TICKER", "DATE"]
             )
             fund = (
                 fund_indexed
                 .reindex(full_idx)
-                .groupby(level="FACTSET_ID")
+                .groupby(level="TICKER")
                 .ffill()
                 .reset_index()
             )
+
+            fund = fund[fund["DATE"] >= pd.Timestamp(start_date)]
 
             return fund
 
@@ -242,6 +253,7 @@ class DataLoader:
                 f"PRICE_TO_SALES) will be skipped for this run.\n"
             )
             return _EMPTY
+
 
     def _cache_path(self, table: str, start_date: str, end_date: str) -> Path:
         key = f"{table}|{start_date}|{end_date}"
