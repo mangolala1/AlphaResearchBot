@@ -32,8 +32,8 @@ _FORMULA_CONSTRAINT = f"""IMPORTANT — two formula fields are required:
    Available columns: {', '.join(sorted(AVAILABLE_RAW_COLUMNS))}
    Allowed cross-sectional operators: {', '.join(sorted(_SAFE_OPERATORS))}()
    Pandas time-series methods: .shift(n), .rolling(n).std(), .pct_change(), .diff(n)
-   DO NOT use ts_mean(), ts_std(), or delta() — they raise NotImplementedError at runtime.
-   Example: rank((OPER_INCOME_LTM + DA_LTM) / SALES_LTM.replace(0, float('nan'))) + 0.5 * rank(ADJUSTED_PRICE.shift(21) / ADJUSTED_PRICE.shift(252) - 1)"""
+   Standard arithmetic: +  -  *  /  **
+   Assume all fundamental columns are already clean with no NaN values, and winsorized after processing."""
 
 
 def plan_next_research(
@@ -198,10 +198,7 @@ _FALLBACK_SUGGESTIONS: list[ResearchSuggestion] = [
         direction="value screen",
         hypothesis="Cheap stocks (low P/S) outperform expensive ones in the cross-section.",
         formula="rank(PRICE_TO_SALES) * -1",
-        raw_formula=(
-            "rank(ADJUSTED_PRICE / (SALES_LTM / SHARES_DILUTED.replace(0, float('nan')))"
-            ".replace(0, float('nan'))) * -1"
-        ),
+        raw_formula="rank(ADJUSTED_PRICE / (REVENUE_LTM / SHARES_DILUTED)) * -1",
         features=["PRICE_TO_SALES"],
         parent_id=None,
         rationale="No value-based alpha has been tested yet.",
@@ -211,9 +208,8 @@ _FALLBACK_SUGGESTIONS: list[ResearchSuggestion] = [
         hypothesis="High-quality cheap stocks outperform: profitable companies trading at low valuations.",
         formula="rank(EBITDA_MARGIN) + rank(PRICE_TO_SALES) * -1",
         raw_formula=(
-            "rank((OPER_INCOME_LTM + DA_LTM) / SALES_LTM.replace(0, float('nan')))"
-            " + rank(ADJUSTED_PRICE / (SALES_LTM / SHARES_DILUTED.replace(0, float('nan')))"
-            ".replace(0, float('nan'))) * -1"
+            "rank((OPERATING_INCOME_LTM + DA_LTM) / REVENUE_LTM)"
+            " + rank(ADJUSTED_PRICE / (REVENUE_LTM / SHARES_DILUTED)) * -1"
         ),
         features=["EBITDA_MARGIN", "PRICE_TO_SALES"],
         parent_id=None,

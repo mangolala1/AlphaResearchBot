@@ -54,8 +54,7 @@ AVAILABLE_RAW_COLUMNS: frozenset[str] = frozenset({
 })
 
 # Function names the LLM may use in a raw_formula.
-# delta/ts_mean/ts_std are listed so the validator recognises them and warns;
-# they raise NotImplementedError at evaluation time.
+# delta/ts_mean/ts_std are time-series operators available in the panel namespace.
 ALLOWED_FUNCTION_NAMES: set[str] = {
     "rank", "zscore", "log", "abs", "sign", "delta", "ts_mean", "ts_std",
 }
@@ -133,9 +132,9 @@ def build_panel_namespace(processed_df: pd.DataFrame) -> dict:
         "log":    lambda df: np.log(df.clip(lower=1e-9)),
         "abs":    lambda df: df.abs(),
         "sign":   lambda df: np.sign(df),
-        "delta":   _ts_error,
-        "ts_mean": _ts_error,
-        "ts_std":  _ts_error,
+        "delta":   lambda df, n: df.diff(n),
+        "ts_mean": lambda df, n: df.rolling(n).mean(),
+        "ts_std":  lambda df, n: df.rolling(n).std(),
         "np":    np,
         "float": float,
         "nan":   float("nan"),
@@ -181,26 +180,22 @@ def evaluate_formula(
 # Private helpers
 # ---------------------------------------------------------------------------
 
-def _ts_error(*args, **kwargs):
-    raise NotImplementedError(
-        "delta(), ts_mean(), ts_std() are not available as formula functions. "
-        "Use pandas DataFrame methods directly in the raw_formula instead:\n"
-        "  shift:   ADJUSTED_PRICE.shift(21)\n"
-        "  rolling: ADJUSTED_PRICE.rolling(20).std()\n"
-        "  diff:    ADJUSTED_PRICE.diff(252)"
-    )
-
-
 def _build_cross_sectional_namespace(cross_section: dict[str, pd.Series]) -> dict:
+    def _ts_unsupported(*args, **kwargs):
+        raise NotImplementedError(
+            "delta(), ts_mean(), ts_std() require a full DATE × TICKER panel — "
+            "they are not available in the legacy cross-sectional evaluator."
+        )
+
     ns: dict = {
-        "rank":   lambda s: s.rank(pct=True),
-        "zscore": lambda s: (s - s.mean()) / (s.std() + 1e-9),
-        "log":    lambda s: np.log(s.clip(lower=1e-9)),
-        "abs":    lambda s: s.abs(),
-        "sign":   lambda s: np.sign(s),
-        "delta":   _ts_error,
-        "ts_mean": _ts_error,
-        "ts_std":  _ts_error,
+        "rank":    lambda s: s.rank(pct=True),
+        "zscore":  lambda s: (s - s.mean()) / (s.std() + 1e-9),
+        "log":     lambda s: np.log(s.clip(lower=1e-9)),
+        "abs":     lambda s: s.abs(),
+        "sign":    lambda s: np.sign(s),
+        "delta":   _ts_unsupported,
+        "ts_mean": _ts_unsupported,
+        "ts_std":  _ts_unsupported,
     }
     ns.update(cross_section)
     return ns
@@ -233,7 +228,7 @@ def _validate_raw_formula_tokens(
         | ALLOWED_FUNCTION_NAMES
         | {"np"}
         | {"shift", "rolling", "diff", "pct_change", "mean", "std",
-           "fillna", "clip", "replace", "abs", "sum", "min", "max",
+           "clip", "abs", "sum", "min", "max",
            "float", "nan"}
     )
     for token in tokens:

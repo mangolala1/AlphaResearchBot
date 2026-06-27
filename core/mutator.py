@@ -27,8 +27,7 @@ Available columns: {', '.join(sorted(AVAILABLE_RAW_COLUMNS))}
 Allowed cross-sectional operators: {', '.join(sorted(_SAFE_OPERATORS))}()
 Pandas time-series methods (call directly on columns): .shift(n), .rolling(n).std(), .pct_change(), .diff(n)
 Standard arithmetic: +  -  *  /  **
-DO NOT use ts_mean(), ts_std(), or delta() — they raise NotImplementedError at runtime.
-Example: rank(ADJUSTED_PRICE.shift(21) / ADJUSTED_PRICE.shift(252) - 1) + 0.5 * rank(OPER_INCOME_LTM / SALES_LTM.replace(0, float('nan')))"""
+Assume all fundamental columns are already clean with no NaN values, and winsorized after processing."""
 
 
 def generate_mutation(
@@ -162,7 +161,7 @@ def _rule_based_mutation(record: dict) -> AlphaConfig:
     icir = metrics.get("ICIR", 0)
 
     # Detect what signals are already in the parent formula
-    has_quality = "OPER_INCOME_LTM" in parent_raw_formula or "NET_INCOME_LTM" in parent_raw_formula
+    has_quality = "OPERATING_INCOME_LTM" in parent_raw_formula or "NET_INCOME_LTM" in parent_raw_formula
     has_momentum = "shift" in parent_raw_formula and "ADJUSTED_PRICE" in parent_raw_formula
 
     if turnover > 0.7:
@@ -173,7 +172,7 @@ def _rule_based_mutation(record: dict) -> AlphaConfig:
         hypothesis = record.get("hypothesis", "") + " (quarterly rebalance)"
 
     elif sharpe < 0.3 and not has_quality:
-        quality_raw = "rank((OPER_INCOME_LTM + DA_LTM) / SALES_LTM.replace(0, float('nan')))"
+        quality_raw = "rank((OPERATING_INCOME_LTM + DA_LTM) / REVENUE_LTM)"
         new_raw_formula = f"({parent_raw_formula}) + 0.3 * {quality_raw}"
         new_formula = f"{record.get('formula', '')} + 0.3 * rank(EBITDA_MARGIN)"
         new_rebalance = config.get("rebalance", "monthly")
@@ -189,7 +188,7 @@ def _rule_based_mutation(record: dict) -> AlphaConfig:
         hypothesis = "Filtering out high-volatility stocks to improve IC consistency."
 
     elif has_momentum and not has_quality:
-        quality_raw = "rank((OPER_INCOME_LTM + DA_LTM) / SALES_LTM.replace(0, float('nan')))"
+        quality_raw = "rank((OPERATING_INCOME_LTM + DA_LTM) / REVENUE_LTM)"
         new_raw_formula = f"({parent_raw_formula}) + 0.3 * {quality_raw}"
         new_formula = f"{record.get('formula', '')} + 0.3 * rank(EBITDA_MARGIN)"
         new_rebalance = config.get("rebalance", "monthly")
