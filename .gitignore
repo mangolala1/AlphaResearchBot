@@ -9,3 +9,4 @@ reports/
 db/
 *.db
 .DS_Store
+/experiments/
