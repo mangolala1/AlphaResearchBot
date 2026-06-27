@@ -14,8 +14,9 @@ def process(
     value_cols: list[str] | None = None,
     winsorise: bool = True,
     standardise: bool = True,
+    ffill_daily: bool = True,
 ) -> pd.DataFrame:
-    """Clean, winsorise, and standardise a data panel.
+    """Clean, winsorise, standardise, and forward-fill a data panel.
 
     Steps:
       1. Normalise to (DATE, TICKER) MultiIndex
@@ -23,6 +24,7 @@ def process(
       3. Cross-sectional winsorisation: clip at 1%/99% across stocks per date
       4. Cross-sectional standardisation: z-score across stocks per date
       5. Drop rows with any remaining NaN in value columns
+      6. Forward-fill to business-day frequency within each ticker
 
     Args:
         df:          Long-format DataFrame with TICKER and DATE columns (or
@@ -31,6 +33,8 @@ def process(
                      non-metadata columns.
         winsorise:   Apply cross-sectional winsorisation.
         standardise: Apply cross-sectional z-score standardisation.
+        ffill_daily: Forward-fill processed values to business-day frequency
+                     within each ticker (step 6).
 
     Returns:
         (DATE, TICKER) MultiIndex DataFrame.
@@ -78,6 +82,11 @@ def process(
     # Drop rows with any NaN remaining in the processed columns
     stacked = stacked.dropna(subset=list(processed.keys()))
 
+    # Forward-fill processed fundamentals to business-day frequency so the
+    # backtest sees daily observations rather than quarterly filing dates.
+    if ffill_daily:
+        stacked = _ffill_to_daily(stacked)
+
     return stacked
 
 
@@ -93,6 +102,26 @@ def _standardise(wide: pd.DataFrame) -> pd.DataFrame:
     mu = wide.mean(axis=1)
     sigma = wide.std(axis=1, ddof=1).replace(0, float("nan")).fillna(1.0) + 1e-9
     return wide.sub(mu, axis=0).div(sigma, axis=0)
+
+
+def _ffill_to_daily(df: pd.DataFrame) -> pd.DataFrame:
+    """Expand a quarterly-frequency panel to business-day frequency via ffill.
+
+    For each ticker, values are held constant from one filing date to the next.
+    Rows before a ticker's first filing date (still NaN after ffill) are dropped.
+    Non-value columns (SECTOR, COUNTRY) are filled the same way since they are
+    static per ticker.
+    """
+    dates = df.index.get_level_values("DATE")
+    tickers = df.index.get_level_values("TICKER").unique()
+    full_dates = pd.bdate_range(start=dates.min(), end=dates.max())
+    full_idx = pd.MultiIndex.from_product([full_dates, tickers], names=["DATE", "TICKER"])
+    return (
+        df.reindex(full_idx)
+        .groupby(level="TICKER")
+        .ffill()
+        .dropna(how="all")
+    )
 
 
 def _to_multiindex(df: pd.DataFrame) -> pd.DataFrame:
