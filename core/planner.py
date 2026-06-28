@@ -20,13 +20,10 @@ _SYSTEM_PROMPT = (
     "Be specific about formulas and features. Think about diversifying signal sources."
 )
 
-_FORMULA_CONSTRAINT = f"""IMPORTANT — two formula fields are required:
-
-1. `formula` (display): free-form human-readable description of the signal for the UI.
-   Example: "EBITDA margin quality + 12-month momentum, low-vol damped"
-
-2. `raw_formula` (execution): each column is a full DATE × TICKER pandas DataFrame.
-   Available columns: {', '.join(sorted(AVAILABLE_RAW_COLUMNS))}
+_FORMULA_CONSTRAINT = f"""IMPORTANT — `formula` uses raw DataFrame column names directly.
+Each column is a full DATE × TICKER pandas DataFrame.
+All fundamental columns are already winsorized and standardized cross-sectionally (z-scored per date) — do NOT apply zscore() or rank() as a first step on raw fundamentals; use them to combine or transform signals.
+Available columns: {', '.join(sorted(AVAILABLE_RAW_COLUMNS))}
 
    Cross-sectional operators (across tickers per date):
      rank(X)  zscore(X)  sign(X)  log(X)  abs(X)  scale(X)  tanh(X)  sigmoid(X)  exp(X)  sqrt(X)
@@ -152,8 +149,7 @@ Return ONLY a JSON array of {n} objects (no markdown, no explanation):
   {{
     "direction": "short label (3-5 words)",
     "hypothesis": "one sentence investment thesis",
-    "formula": "display formula using named feature labels",
-    "raw_formula": "execution formula using raw column DataFrames and pandas methods",
+    "formula": "execution formula using raw column DataFrames and pandas methods",
     "features": ["list", "of", "named", "features"],
     "parent_id": "alpha_id to branch from, or null",
     "rationale": "one sentence: why this direction given prior results"
@@ -172,15 +168,14 @@ def _parse_suggestions(raw: str, summary: MemorySummary) -> list[ResearchSuggest
         if not isinstance(item, dict):
             continue
 
-        raw_formula = item.get("raw_formula", "")
-        if not raw_formula:
-            print(f"  [planner] Skipping '{item.get('direction')}': missing raw_formula")
+        formula = item.get("formula", "")
+        if not formula:
+            print(f"  [planner] Skipping '{item.get('direction')}': missing formula")
             continue
 
         test_config = AlphaConfig(
             alpha_id=f"plan_test_{len(valid)}",
-            formula=item.get("formula", ""),
-            raw_formula=raw_formula,
+            formula=formula,
             features=item.get("features", []),
             universe="sp500",
             start_date="2021-01-01",
@@ -194,8 +189,7 @@ def _parse_suggestions(raw: str, summary: MemorySummary) -> list[ResearchSuggest
         valid.append(ResearchSuggestion(
             direction=item.get("direction", ""),
             hypothesis=item.get("hypothesis", ""),
-            formula=item.get("formula", ""),
-            raw_formula=raw_formula,
+            formula=formula,
             features=item.get("features", []),
             parent_id=item.get("parent_id"),
             rationale=item.get("rationale", ""),
@@ -212,8 +206,7 @@ _FALLBACK_SUGGESTIONS: list[ResearchSuggestion] = [
     ResearchSuggestion(
         direction="value screen",
         hypothesis="Cheap stocks (low P/S) outperform expensive ones in the cross-section.",
-        formula="rank(PRICE_TO_SALES) * -1",
-        raw_formula="rank(ADJUSTED_PRICE / (REVENUE_LTM / SHARES_DILUTED)) * -1",
+        formula="rank(ADJUSTED_PRICE / (REVENUE_LTM / SHARES_DILUTED)) * -1",
         features=["PRICE_TO_SALES"],
         parent_id=None,
         rationale="No value-based alpha has been tested yet.",
@@ -221,8 +214,7 @@ _FALLBACK_SUGGESTIONS: list[ResearchSuggestion] = [
     ResearchSuggestion(
         direction="quality + value",
         hypothesis="High-quality cheap stocks outperform: profitable companies trading at low valuations.",
-        formula="rank(EBITDA_MARGIN) + rank(PRICE_TO_SALES) * -1",
-        raw_formula=(
+        formula=(
             "rank((OPERATING_INCOME_LTM + DA_LTM) / REVENUE_LTM)"
             " + rank(ADJUSTED_PRICE / (REVENUE_LTM / SHARES_DILUTED)) * -1"
         ),
@@ -233,10 +225,9 @@ _FALLBACK_SUGGESTIONS: list[ResearchSuggestion] = [
     ResearchSuggestion(
         direction="earnings growth momentum",
         hypothesis="Companies with accelerating EPS growth attract institutional buying.",
-        formula="rank(EPS_GROWTH) + 0.5 * rank(SALES_GROWTH)",
-        raw_formula=(
+        formula=(
             "rank(NET_INCOME_LTM / NET_INCOME_LTM.shift(252) - 1)"
-            " + 0.5 * rank(SALES_LTM / SALES_LTM.shift(252) - 1)"
+            " + 0.5 * rank(REVENUE_LTM / REVENUE_LTM.shift(252) - 1)"
         ),
         features=["EPS_GROWTH", "SALES_GROWTH"],
         parent_id=None,
@@ -245,8 +236,7 @@ _FALLBACK_SUGGESTIONS: list[ResearchSuggestion] = [
     ResearchSuggestion(
         direction="low volatility",
         hypothesis="Low-volatility stocks generate better risk-adjusted returns due to investor preference for lotteries.",
-        formula="rank(VOL_20D) * -1",
-        raw_formula="rank(ADJUSTED_PRICE.pct_change().rolling(20).std()) * -1",
+        formula="rank(ADJUSTED_PRICE.pct_change().rolling(20).std()) * -1",
         features=["VOL_20D"],
         parent_id=None,
         rationale="The low-vol anomaly is well-documented and unexplored here.",
@@ -254,8 +244,7 @@ _FALLBACK_SUGGESTIONS: list[ResearchSuggestion] = [
     ResearchSuggestion(
         direction="liquidity + momentum",
         hypothesis="Liquid momentum stocks outperform because they are easier to trade and attract trend-following flows.",
-        formula="rank(MOM6_1) * rank(LIQUIDITY)",
-        raw_formula=(
+        formula=(
             "rank(ADJUSTED_PRICE.shift(21) / ADJUSTED_PRICE.shift(126) - 1)"
             " * rank(ADJUSTED_VOLUME * ADJUSTED_PRICE)"
         ),

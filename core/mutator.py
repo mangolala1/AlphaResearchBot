@@ -20,8 +20,9 @@ _SYSTEM_PROMPT = (
     "Be precise and concrete. Only suggest formulas using supported operators and raw data columns."
 )
 
-_FORMULA_CONSTRAINT = f"""IMPORTANT — raw_formula uses raw DataFrame column names directly.
+_FORMULA_CONSTRAINT = f"""IMPORTANT — formula uses raw DataFrame column names directly.
 Each column is a full DATE × TICKER pandas DataFrame.
+All fundamental columns are already winsorized and standardized cross-sectionally (z-scored per date) — do NOT apply zscore() or rank() as a first step on raw fundamentals; use them to combine or transform signals.
 Available columns: {', '.join(sorted(AVAILABLE_RAW_COLUMNS))}
 
 Cross-sectional operators (across tickers per date):
@@ -106,8 +107,7 @@ def _build_mutation_prompt(record: dict) -> str:
 
 Parent Alpha:
 - alpha_id: {record["alpha_id"]}
-- Formula (display): {record.get("formula", "N/A")}
-- Raw formula (execution): {config.get("raw_formula", "N/A")}
+- Formula: {config.get("formula", "N/A")}
 - Universe: {config.get("universe")} | Rebalance: {config.get("rebalance")} | Neutralization: {config.get("neutralization")}
 - Period: {config.get("start_date")} to {config.get("end_date")}
 
@@ -128,8 +128,7 @@ Prior Reflection:
 Return ONLY a JSON object (no markdown, no explanation) with these fields:
 {{
   "hypothesis": "one sentence investment thesis",
-  "formula": "human-readable description of the signal (free text)",
-  "raw_formula": "execution formula using raw column DataFrames",
+  "formula": "execution formula using raw column DataFrames",
   "mutation": "one sentence describing what changed vs parent",
   "universe": "{config.get("universe", "sp500")}",
   "start_date": "{config.get("start_date", "2021-01-01")}",
@@ -167,7 +166,7 @@ def _parse_and_validate(raw: str, parent_record: dict) -> AlphaConfig:
 def _rule_based_mutation(record: dict) -> AlphaConfig:
     config = record.get("config", {})
     metrics = record.get("metrics", {})
-    parent_raw_formula: str = config.get("raw_formula", "rank(ADJUSTED_PRICE.pct_change().rolling(20).std()) * -1")
+    parent_formula: str = config.get("formula", "rank(ADJUSTED_PRICE.pct_change().rolling(20).std()) * -1")
 
     parent_id = record["alpha_id"]
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
@@ -177,45 +176,39 @@ def _rule_based_mutation(record: dict) -> AlphaConfig:
     sharpe = metrics.get("Sharpe", 0)
     icir = metrics.get("ICIR", 0)
 
-    # Detect what signals are already in the parent formula
-    has_quality = "OPERATING_INCOME_LTM" in parent_raw_formula or "NET_INCOME_LTM" in parent_raw_formula
-    has_momentum = "shift" in parent_raw_formula and "ADJUSTED_PRICE" in parent_raw_formula
+    has_quality = "OPERATING_INCOME_LTM" in parent_formula or "NET_INCOME_LTM" in parent_formula
+    has_momentum = "shift" in parent_formula and "ADJUSTED_PRICE" in parent_formula
 
     if turnover > 0.7:
-        new_raw_formula = parent_raw_formula
-        new_formula = record.get("formula", "")
+        new_formula = parent_formula
         new_rebalance = "quarterly"
         mutation_desc = "Switched rebalance frequency to quarterly to reduce turnover."
         hypothesis = record.get("hypothesis", "") + " (quarterly rebalance)"
 
     elif sharpe < 0.3 and not has_quality:
         quality_raw = "rank((OPERATING_INCOME_LTM + DA_LTM) / REVENUE_LTM)"
-        new_raw_formula = f"({parent_raw_formula}) + 0.3 * {quality_raw}"
-        new_formula = f"{record.get('formula', '')} + 0.3 * rank(EBITDA_MARGIN)"
+        new_formula = f"({parent_formula}) + 0.3 * {quality_raw}"
         new_rebalance = config.get("rebalance", "monthly")
         mutation_desc = "Added EBITDA_MARGIN quality overlay to strengthen weak signal."
         hypothesis = "Adding profitability overlay to improve signal strength."
 
     elif icir < 0.2:
         vol_raw = "rank(ADJUSTED_PRICE.pct_change().rolling(20).std())"
-        new_raw_formula = f"({parent_raw_formula}) * (1 - {vol_raw})"
-        new_formula = f"({record.get('formula', '')}) * (1 - rank(VOL_20D))"
+        new_formula = f"({parent_formula}) * (1 - {vol_raw})"
         new_rebalance = config.get("rebalance", "monthly")
         mutation_desc = "Added low-volatility damper to reduce noise."
         hypothesis = "Filtering out high-volatility stocks to improve IC consistency."
 
     elif has_momentum and not has_quality:
         quality_raw = "rank((OPERATING_INCOME_LTM + DA_LTM) / REVENUE_LTM)"
-        new_raw_formula = f"({parent_raw_formula}) + 0.3 * {quality_raw}"
-        new_formula = f"{record.get('formula', '')} + 0.3 * rank(EBITDA_MARGIN)"
+        new_formula = f"({parent_formula}) + 0.3 * {quality_raw}"
         new_rebalance = config.get("rebalance", "monthly")
         mutation_desc = "Added quality overlay to complement momentum."
         hypothesis = "Quality + momentum combination to improve signal stability."
 
     else:
         liquidity_raw = "rank(ADJUSTED_VOLUME * ADJUSTED_PRICE)"
-        new_raw_formula = f"({parent_raw_formula}) * {liquidity_raw}"
-        new_formula = f"({record.get('formula', '')}) * rank(LIQUIDITY)"
+        new_formula = f"({parent_formula}) * {liquidity_raw}"
         new_rebalance = config.get("rebalance", "monthly")
         mutation_desc = "Added liquidity screen to concentrate in tradeable stocks."
         hypothesis = "Restricting universe to liquid stocks to reduce noise."
@@ -225,7 +218,6 @@ def _rule_based_mutation(record: dict) -> AlphaConfig:
         parent_id=parent_id,
         hypothesis=hypothesis,
         formula=new_formula,
-        raw_formula=new_raw_formula,
         mutation=mutation_desc,
         universe=config.get("universe", "sp500"),
         start_date=config.get("start_date", "2021-01-01"),
