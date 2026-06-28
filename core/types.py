@@ -13,9 +13,7 @@ class AlphaConfig(TypedDict, total=False):
     alpha_id: str
     parent_id: str | None
     hypothesis: str
-    formula: str       # display formula — human-readable, shown in UI (e.g. rank(MOM12_1))
-    raw_formula: str   # execution formula — uses raw column names as panel DataFrames
-                       # (e.g. rank(ADJUSTED_PRICE.shift(21) / ADJUSTED_PRICE.shift(252) - 1))
+    formula: str       # execution formula — uses raw column names as panel DataFrames
     features: list[str]
     mutation: str
     universe: str
@@ -48,6 +46,7 @@ class RobustnessResult(TypedDict):
 class ExperimentRecord(TypedDict):
     alpha_id: str
     parent_id: str | None
+    batch_id: str | None
     timestamp: str
     hypothesis: str
     formula: str
@@ -88,8 +87,7 @@ class SimilarityResult(TypedDict):
 class ResearchSuggestion(TypedDict):
     direction: str
     hypothesis: str
-    formula: str       # display formula — named features, shown in UI
-    raw_formula: str   # execution formula — raw column DataFrames, eval'd at runtime
+    formula: str       # execution formula — raw column DataFrames, eval'd at runtime
     features: list[str]
     parent_id: str | None
     rationale: str

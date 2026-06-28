@@ -23,7 +23,7 @@ Future steps: might need better logic or flexibility for na values handling, may
 - Added more operators
 - Changed the operators' definition to also show the parameters each can take
 
-### ~~Features.py~~ signal calculation.py
+### ~~Features.py~~ signal_calculation.py
 - Issue1: Winsorization of computed features
   - The current implementation of winsorization is scattered across different feature branches, leading to inconsistencies in how outliers are handled. Some features, such as `VOL_20D`, `LIQUIDITY`, and raw fundamental pass-throughs, do not have any clipping applied, allowing extreme outliers to flow into formula evaluation.
   - Fix: Centralize the winsorization process in the `compute_features` loop, applying it to every feature panel after computation, except for raw price inputs used by momentum features. This will ensure that all computed features are consistently winsorized before use.
@@ -51,6 +51,7 @@ FEATURE_REGISTRY = {
 ```
 - Issue1: na handling in signal calculation: operators like rolling() might create na values in the first few rows, and then the formula evaluation will create na values for those rows. 
 - Fix: Should pre-load the data for one year so that this won't happen, and also add a check for na values before applying the formula?
+- Dropping formula and raw formula design, keeping only raw formula from now on for calculation and user view
 
 ### Robustness.py
 - Fixed placebo score to do multiple shuffles within a month instead of just one
@@ -68,7 +69,7 @@ FEATURE_REGISTRY = {
 - I also want to add a filter on what to display on the graph, so it doesn't need to show all the nodes in experiments.db.
   - Include ancestors
 
-- Keep an id for each alpha generated OR take the index of the experiments.db as the id for each node saved in the experiments.db
+- Keep an id for each alpha generated ~~OR take the index of the experiments.db as the id for each node saved in the experiments.db~~
 
 Question: how does multiple testing bias apply? does it apply as long as I am using the same test to test? or I can reset my experiments number to 0 when I switch a direction or something?
 
@@ -297,3 +298,16 @@ python scripts/export_graph.py --filter-top 5
 python scripts/export_graph.py --filter-batch batch_20260627_...
 python scripts/export_graph.py --filter-verdict promising --include-ancestors
 ```
+
+### Running experiments to create a graph with multiple rings
+- Issue: when the signal has duplicate quantile values (many stocks get the same rank), the 4 quantile cuts aren't all unique. duplicates="drop" silently removes duplicate bin edges, leaving fewer than 5 bins, but 5 labels are still passed, causing a mismatch.
+- Fix: deduplicate the bins before calling pd.cut, then generate labels to match the actual bin count.
+- Or track how often actual_bins < 5. If it is common, the alpha has weak cross-sectional resolution:
+  - If this happens occasionally on a few dates, skip those dates or use fewer buckets.
+  - If it happens often, the alpha is probably too discrete/sparse and quintile testing is not meaningful.
+  - If many stocks have identical values because the alpha is binary / categorical / mostly zero, use group returns by raw signal value or long-short top vs bottom nonzero groups, not quintiles.
+- Added one line in the prompt to llm that my processed dataset is already winsorized and standardized cross-sectionally
+- TODO: add desription of data columns so LLM can understand better
+- Fixed issue that reflection.py never sends llm the list of allowed operators such than llm makes up an operator that is not defined in this project.
+- Issue2: ffill method kept holiday dates and filled na values in the price data, which causes the backtest to run on non-trading dates and produce incorrect results.
+- Fix: joining data on prices and keeping only the dates in the price data, so that the backtest will only run on trading dates.

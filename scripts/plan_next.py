@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -50,7 +51,6 @@ def main() -> None:
         print(f"Suggestion {i}: {s['direction']}")
         print(f"  Hypothesis  : {s['hypothesis']}")
         print(f"  Formula     : {s['formula']}")
-        print(f"  Raw formula : {s['raw_formula']}")
         print(f"  Features    : {s['features']}")
         print(f"  Parent      : {s['parent_id'] or 'none (new branch)'}")
         print(f"  Rationale   : {s['rationale']}")
@@ -60,6 +60,7 @@ def main() -> None:
         saved = []
         exp_dir = Path("experiments")
         exp_dir.mkdir(exist_ok=True)
+        batch_id = f"batch_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
 
         for i, s in enumerate(suggestions, 1):
             alpha_id = f"plan_{i:03d}_{s['direction'].lower().replace(' ', '_')}"
@@ -68,9 +69,9 @@ def main() -> None:
             config = {
                 "alpha_id": alpha_id,
                 "parent_id": s["parent_id"],
+                "batch_id": batch_id,
                 "hypothesis": s["hypothesis"],
                 "formula": s["formula"],
-                "raw_formula": s["raw_formula"],
                 "features": s["features"],
                 "mutation": f"Planner suggestion: {s['direction']}",
                 "universe": base.get("universe", "sp500"),
@@ -90,6 +91,7 @@ def main() -> None:
         print(f"Saved {len(saved)} suggestion(s) to experiments/:")
         for p in saved:
             print(f"  {p}")
+        print(f"  Batch ID: {batch_id}")
         print(f"\nRun any with:")
         print(f"  python scripts/run_experiment.py --config experiments/<file>.json")
         print()

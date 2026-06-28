@@ -55,20 +55,36 @@ def _llm_mutation(record: dict) -> AlphaConfig:
 
     client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
     prompt = _build_mutation_prompt(record)
+    messages = [
+        {"role": "system", "content": _SYSTEM_PROMPT},
+        {"role": "user", "content": prompt},
+    ]
 
-    response = client.chat.completions.create(
-        model="deepseek-chat",
-        messages=[
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ],
-        temperature=0.3,
-        max_tokens=600,
-    )
+    last_error = None
+    for attempt in range(3):
+        response = client.chat.completions.create(
+            model="deepseek-chat",
+            messages=messages,
+            temperature=0.3,
+            max_tokens=600,
+        )
+        raw = response.choices[0].message.content.strip()
+        try:
+            child = _parse_and_validate(raw, record)
+            return child
+        except ValueError as exc:
+            last_error = exc
+            messages.append({"role": "assistant", "content": raw})
+            messages.append({
+                "role": "user",
+                "content": (
+                    f"Your formula failed validation: {exc}\n"
+                    "Fix ONLY the formula field and return the corrected JSON. "
+                    "Use only the exact operator names from the list provided earlier."
+                ),
+            })
 
-    raw = response.choices[0].message.content.strip()
-    child = _parse_and_validate(raw, record)
-    return child
+    raise ValueError(f"LLM failed after 3 attempts: {last_error}")
 
 
 def _build_mutation_prompt(record: dict) -> str:

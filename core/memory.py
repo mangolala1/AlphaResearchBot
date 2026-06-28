@@ -12,6 +12,7 @@ _CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS experiments (
     alpha_id       TEXT PRIMARY KEY,
     parent_id      TEXT,
+    batch_id       TEXT,
     timestamp      TEXT NOT NULL,
     hypothesis     TEXT,
     formula        TEXT,
@@ -38,12 +39,17 @@ class ExperimentStore:
     def init_db(self) -> None:
         with self._connect() as conn:
             conn.execute(_CREATE_TABLE)
+            try:
+                conn.execute("ALTER TABLE experiments ADD COLUMN batch_id TEXT")
+            except Exception:
+                pass  # column already exists
 
     def save_experiment(self, record: ExperimentRecord) -> None:
         """Insert or replace an experiment record."""
         row = (
             record["alpha_id"],
             record.get("parent_id"),
+            record.get("batch_id"),
             record["timestamp"],
             record.get("hypothesis", ""),
             record.get("formula", ""),
@@ -60,9 +66,9 @@ class ExperimentStore:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO experiments
-                (alpha_id, parent_id, timestamp, hypothesis, formula, features,
+                (alpha_id, parent_id, batch_id, timestamp, hypothesis, formula, features,
                  mutation, config, metrics, robustness, verdict, failure_reason, reflection)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 row,
             )
@@ -89,6 +95,7 @@ class ExperimentStore:
         return ExperimentRecord(
             alpha_id=row["alpha_id"],
             parent_id=row["parent_id"],
+            batch_id=row["batch_id"],
             timestamp=row["timestamp"],
             hypothesis=row["hypothesis"],
             formula=row["formula"],

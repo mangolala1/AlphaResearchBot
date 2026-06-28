@@ -161,6 +161,7 @@ def main() -> None:
     record = ExperimentRecord(
         alpha_id=alpha["alpha_id"],
         parent_id=alpha.get("parent_id"),
+        batch_id=alpha.get("batch_id"),
         timestamp=datetime.now(timezone.utc).isoformat(),
         hypothesis=alpha.get("hypothesis", ""),
         formula=alpha.get("formula", ""),

@@ -186,14 +186,6 @@ if __name__ == "__main__":
     with open("experiments/sample_alpha_001.json") as f:
         alpha = json.load(f)
 
-    # raw_formula is required by the backtest pipeline; add one matching the
-    # display formula if the JSON predates the two-formula system.
-    if "raw_formula" not in alpha:
-        alpha["raw_formula"] = (
-            "rank((OPER_INCOME_LTM + DA_LTM) / SALES_LTM.replace(0, float('nan'))) "
-            "+ 0.5 * rank(ADJUSTED_PRICE.shift(21) / ADJUSTED_PRICE.shift(252) - 1)"
-        )
-
     print("Running backtest...")
     result = run_backtest(alpha)
 

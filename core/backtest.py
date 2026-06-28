@@ -37,7 +37,7 @@ def run_backtest(
     # Process and cache income statement
     income_path = processed_path("income", start_date, end_date)
     if not no_cache and income_path.exists():
-        print(f"[Backtest] Loading processed income from {income_path}")
+        # print(f"[Backtest] Loading processed income from {income_path}")
         processed_income = pd.read_parquet(income_path)
     else:
         processed_income = process_data(income_ttm_df)
@@ -47,7 +47,7 @@ def run_backtest(
     # Process and cache cash flow statement
     cashflow_path = processed_path("cashflow", start_date, end_date)
     if not no_cache and cashflow_path.exists():
-        print(f"[Backtest] Loading processed cashflow from {cashflow_path}")
+        # print(f"[Backtest] Loading processed cashflow from {cashflow_path}")
         processed_cashflow = pd.read_parquet(cashflow_path)
     else:
         processed_cashflow = process_data(cashflow_ttm_df)
@@ -65,11 +65,19 @@ def run_backtest(
         sector_map = universe_df.set_index("TICKER")["SECTOR"]
         processed_df["SECTOR"] = processed_df.index.get_level_values("TICKER").map(sector_map)
 
-    # Join raw price columns back — not standardised, used in momentum/ratio formulas
+    # Join raw price columns back — not standardised, used in momentum/ratio formulas.
+    # Then restrict the panel to actual trading dates (dates present in the price data).
+    # The fundamentals panel uses pd.bdate_range which includes US market holidays; prices
+    # don't. Dropping non-trading rows here means rolling operators like ts_std(X, 60)
+    # always see a clean window with no NaN gaps from holidays.
     prices = prices_df.copy()
     prices["DATE"] = pd.to_datetime(prices["DATE"])
     price_mi = prices.set_index(["DATE", "TICKER"])[["ADJUSTED_PRICE", "ADJUSTED_VOLUME"]]
     processed_df = processed_df.join(price_mi)
+    trading_dates = price_mi.index.get_level_values("DATE").unique()
+    processed_df = processed_df[
+        processed_df.index.get_level_values("DATE").isin(trading_dates)
+    ]
 
     # Compute full signal panel over the entire date range at once
     signal_series = compute_signal(processed_df, alpha["formula"])
@@ -182,7 +190,7 @@ def run_backtest(
         print(
             f"  [backtest] WARNING: signal collapsed to <5 quintile bins in "
             f"{degraded_bin_periods}/{total_periods} periods ({pct:.0f}%). "
-            "This indicates weak cross-sectional resolution — many stocks share "
+            "This indicates weak cross-sectional resolution: many stocks share "
             "identical signal values."
         )
 

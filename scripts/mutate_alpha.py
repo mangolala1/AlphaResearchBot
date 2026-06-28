@@ -12,6 +12,7 @@ import argparse
 import json
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -28,6 +29,7 @@ def main() -> None:
     parser.add_argument("--parent", required=True, help="alpha_id of the parent experiment")
     parser.add_argument("--db", default="db/experiments.db", help="SQLite database path")
     parser.add_argument("--run", action="store_true", help="Run the generated alpha immediately after saving")
+    parser.add_argument("--batch-id", default=None, help="Batch ID for this mutation session (auto-generated if not provided)")
     args = parser.parse_args()
 
     store = ExperimentStore(db_path=args.db)
@@ -38,6 +40,10 @@ def main() -> None:
     except Exception as exc:
         print(f"ERROR: {exc}")
         sys.exit(1)
+
+    # Stamp batch_id onto the child config
+    batch_id = args.batch_id or f"batch_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
+    child["batch_id"] = batch_id
 
     # Save to experiments/
     out_path = Path("experiments") / f"{child['alpha_id']}.json"

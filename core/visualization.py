@@ -551,6 +551,26 @@ const network = new vis.Network(
   }
 );
 
+// ── Ring layer boundaries ─────────────────────────────────────────────────────
+(function() {
+  const maxRing = Math.max(...NODES_DATA.map(n => n.ring));
+  if (maxRing === 0) return;
+
+  network.on('beforeDrawing', function(ctx) {
+    ctx.save();
+    ctx.setLineDash([14, 7]);
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = 'rgba(120, 140, 200, 0.30)';
+    for (let ring = 0; ring <= maxRing; ring++) {
+      const r = 120 + ring * 220 + 60;
+      ctx.beginPath();
+      ctx.arc(0, 0, r, 0, 2 * Math.PI);
+      ctx.stroke();
+    }
+    ctx.restore();
+  });
+})();
+
 // ── Panel open / close ────────────────────────────────────────────────────────
 const detailPane    = document.getElementById('detail-pane');
 const resizeHandle  = document.getElementById('resize-handle');
