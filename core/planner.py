@@ -11,7 +11,7 @@ import re
 
 from core.types import AlphaConfig, MemorySummary, ResearchSuggestion
 from core.formula_validator import (
-    ALLOWED_FUNCTION_NAMES, AVAILABLE_RAW_COLUMNS, validate_alpha,
+    ALLOWED_FUNCTION_NAMES, FORMULA_CONSTRAINT, validate_alpha,
 )
 
 _SYSTEM_PROMPT = (
@@ -19,33 +19,6 @@ _SYSTEM_PROMPT = (
     "Based on what has been tried and what failed, suggest new research directions. "
     "Be specific about formulas and features. Think about diversifying signal sources."
 )
-
-_FORMULA_CONSTRAINT = f"""IMPORTANT — `formula` uses raw DataFrame column names directly.
-Each column is a full DATE × TICKER pandas DataFrame.
-All fundamental columns are already winsorized and standardized cross-sectionally (z-scored per date) — do NOT apply zscore() or rank() as a first step on raw fundamentals; use them to combine or transform signals.
-Available columns: {', '.join(sorted(AVAILABLE_RAW_COLUMNS))}
-
-   Cross-sectional operators (across tickers per date):
-     rank(X)  zscore(X)  sign(X)  log(X)  abs(X)  scale(X)  tanh(X)  sigmoid(X)  exp(X)  sqrt(X)
-     power(X, n)  sign_power(X, n)  max(A, B)  min(A, B)  clip(X, lo, hi)  where(cond, t, f)
-     group_rank(X, SECTOR)  group_zscore(X, SECTOR)  indneutralize(X, SECTOR)
-
-   Time-series operators (along date axis per ticker):
-     ts_mean(X, n)  ts_std(X, n)  ts_max(X, n)  ts_min(X, n)  ts_sum(X, n)
-     ts_shift(X, n)  ts_delta(X, n)  delta(X, n)
-     ts_rank(X, n)  ts_argmax(X, n)  ts_argmin(X, n)
-     ts_corr(X, Y, n)  ts_cov(X, Y, n)
-     decay_linear(X, n)  product(X, n)
-     ts_av_diff(X, n)  ts_zscore(X, n)
-
-   Technical indicators:
-     ema(X, n)  sma(X, n)  wma(X, n)  rsi(X, n)  macd(X, n)
-     boll_upper(X, n)  boll_lower(X, n)  boll_mid(X, n)
-
-   Pandas methods work inline: X.shift(n)  X.pct_change()  X.rolling(n).mean()
-   Standard arithmetic: +  -  *  /  **
-   All fundamental columns are TTM (trailing twelve months), not point-in-time — do NOT treat them as quarterly snapshots.
-   All fundamental columns are already clean with no NaN values — do NOT use .fillna() or .replace()."""
 
 
 def plan_next_research(
@@ -139,7 +112,7 @@ Unexplored features: {unexplored}
 Trend observations:
 {trend_lines}
 
-{_FORMULA_CONSTRAINT}
+{FORMULA_CONSTRAINT}
 
 Suggest {n} NEW alpha research directions that are meaningfully different from what has been tried.
 Prioritize unexplored signal types (value, quality, growth, volatility, liquidity).

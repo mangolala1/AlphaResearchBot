@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 
+from core.formula_validator import FORMULA_CONSTRAINT
 from core.types import AlphaConfig, BacktestMetrics, RobustnessResult, Verdict
 
 _DISCLAIMER = "[DISCLAIMER: LLM-generated hypothesis, not validated evidence]"
@@ -84,7 +85,7 @@ Possible Explanation: <1-2 sentences on why the alpha performed this way>
 Next Mutation: <1 concrete, specific change to the formula or config to try next>
 
 Backtest details:
-- Formula: {alpha.get("formula")}
+- Formula: {alpha.get("formula")}  [execution]
 - Features: {alpha.get("features")}
 - Universe: {alpha.get("universe")} | Rebalance: {alpha.get("rebalance")} | Neutralization: {alpha.get("neutralization")}
 - Period: {alpha.get("start_date")} to {alpha.get("end_date")}
@@ -104,6 +105,8 @@ Robustness:
 - Subperiod Stability: {robustness["subperiod_stability"]:.4f}
 - Market Regime Sharpe: {", ".join(f"{r}: {v:.3f}" for r, v in robustness["market_regime_sharpe"].items()) or "N/A"}
 - Placebo Score: {robustness["placebo_score"]:.4f}
+
+{FORMULA_CONSTRAINT}
 """
 
 

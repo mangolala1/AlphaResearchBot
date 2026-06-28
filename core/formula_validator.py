@@ -46,7 +46,6 @@ AVAILABLE_RAW_COLUMNS: frozenset[str] = frozenset({
     "CFO_LTM",
     "FIXED_ASSET_CHANGE_LTM",
     "CFI_LTM",
-    "CAPEX_LTM",
     "DEBT_FINANCING_CF_LTM",
     "EQUITY_FINANCING_CF_LTM",
     "CFF_LTM",
@@ -73,8 +72,40 @@ ALLOWED_FUNCTION_NAMES: set[str] = {
 
 ALLOWED_UNIVERSES: set[str] = {"sp500"}
 
+# Canonical operator reference injected into every LLM prompt that may produce a formula.
+FORMULA_CONSTRAINT: str = (
+    "IMPORTANT — `formula` uses raw DataFrame column names directly.\n"
+    "Each column is a full DATE × TICKER pandas DataFrame.\n"
+    "All fundamental columns are already winsorized and standardized cross-sectionally "
+    "(z-scored per date) — do NOT apply zscore() or rank() as a first step on raw "
+    "fundamentals; use them to combine or transform signals.\n"
+    f"Available columns: {', '.join(sorted(AVAILABLE_RAW_COLUMNS))}\n"
+    "\n"
+    "Cross-sectional operators (across tickers per date):\n"
+    "  rank(X)  zscore(X)  sign(X)  log(X)  abs(X)  scale(X)  tanh(X)  sigmoid(X)  exp(X)  sqrt(X)\n"
+    "  power(X, n)  sign_power(X, n)  max(A, B)  min(A, B)  clip(X, lo, hi)  where(cond, t, f)\n"
+    "  group_rank(X, SECTOR)  group_zscore(X, SECTOR)  indneutralize(X, SECTOR)\n"
+    "\n"
+    "Time-series operators (along date axis per ticker):\n"
+    "  ts_mean(X, n)  ts_std(X, n)  ts_max(X, n)  ts_min(X, n)  ts_sum(X, n)\n"
+    "  ts_shift(X, n)  ts_delta(X, n)  delta(X, n)\n"
+    "  ts_rank(X, n)  ts_argmax(X, n)  ts_argmin(X, n)\n"
+    "  ts_corr(X, Y, n)  ts_cov(X, Y, n)\n"
+    "  decay_linear(X, n)  product(X, n)\n"
+    "  ts_av_diff(X, n)  ts_zscore(X, n)\n"
+    "\n"
+    "Technical indicators:\n"
+    "  ema(X, n)  sma(X, n)  wma(X, n)  rsi(X, n)  macd(X, n)\n"
+    "  boll_upper(X, n)  boll_lower(X, n)  boll_mid(X, n)\n"
+    "\n"
+    "Pandas methods work inline: X.shift(n)  X.pct_change()  X.diff(n)  X.rolling(n).mean()\n"
+    "Standard arithmetic: +  -  *  /  **\n"
+    "All fundamental columns are TTM (trailing twelve months), not point-in-time.\n"
+    "All fundamental columns are already clean with no NaN values — do NOT use .fillna() or .replace()."
+)
+
 REQUIRED_KEYS: list[str] = [
-    "alpha_id", "raw_formula", "universe", "start_date", "end_date",
+    "alpha_id", "formula", "universe", "start_date", "end_date",
 ]
 
 _DATE_FMT = "%Y-%m-%d"
@@ -97,9 +128,9 @@ def validate_alpha(alpha: AlphaConfig) -> ValidationResult:
     if errors:
         return ValidationResult(valid=False, errors=errors, warnings=warnings)
 
-    # 2. Raw formula validation
-    raw_formula = alpha.get("raw_formula", "")
-    _validate_raw_formula_tokens(raw_formula, errors, warnings)
+    # 2. Formula validation
+    formula = alpha.get("formula", "")
+    _validate_formula_tokens(formula, errors, warnings)
 
     # 3. Universe
     if alpha.get("universe") not in ALLOWED_UNIVERSES:
@@ -182,7 +213,7 @@ def _where(cond: pd.DataFrame, t, f) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 def build_panel_namespace(processed_df: pd.DataFrame) -> dict:
-    """Build the eval namespace for raw_formula evaluation.
+    """Build the eval namespace for formula evaluation.
 
     Each data column is pivoted to a DATE × TICKER wide DataFrame so formulas
     can use pandas time-series methods and the operators defined below.
@@ -310,11 +341,11 @@ def _tokenize(formula: str) -> list[str]:
     return re.findall(r"[A-Za-z_][A-Za-z0-9_]*", formula)
 
 
-def _validate_raw_formula_tokens(
+def _validate_formula_tokens(
     formula: str, errors: list[str], warnings: list[str]
 ) -> None:
     if not formula.strip():
-        errors.append("raw_formula must not be empty")
+        errors.append("formula must not be empty")
         return
 
     _check_parens(formula, errors)
@@ -324,7 +355,7 @@ def _validate_raw_formula_tokens(
     tokens = set(_tokenize(formula))
     if not (tokens & AVAILABLE_RAW_COLUMNS):
         errors.append(
-            "raw_formula does not reference any known data column. "
+            "formula does not reference any known data column. "
             f"Available columns: {sorted(AVAILABLE_RAW_COLUMNS)}"
         )
 
