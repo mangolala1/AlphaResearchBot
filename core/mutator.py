@@ -93,10 +93,11 @@ Results:
 - Turnover: {metrics.get("turnover", 0):.4f}
 - Subperiod Stability: {robustness.get("subperiod_stability", 0):.4f}
 
-Prior Reflection:
+Prior Reflection (for context only — do NOT copy function names from it verbatim):
 {record.get("reflection", "N/A")}
 
 {FORMULA_CONSTRAINT}
+CRITICAL: Use ONLY the operator names listed above. Any operator name in the reflection that is not in the list above is incorrect — do not use it.
 
 Return ONLY a JSON object (no markdown, no explanation) with these fields:
 {{

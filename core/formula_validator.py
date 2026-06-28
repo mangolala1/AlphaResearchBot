@@ -359,19 +359,23 @@ def _validate_formula_tokens(
             f"Available columns: {sorted(AVAILABLE_RAW_COLUMNS)}"
         )
 
-    known_identifiers = (
-        AVAILABLE_RAW_COLUMNS
-        | ALLOWED_FUNCTION_NAMES
-        | {"np"}
-        | {"shift", "rolling", "diff", "pct_change", "mean", "std",
-           "clip", "abs", "sum", "min", "max",
-           "float", "nan"}
-    )
+    pandas_methods = {"shift", "rolling", "diff", "pct_change", "mean", "std",
+                      "clip", "abs", "sum", "min", "max", "float", "nan"}
+    known_identifiers = AVAILABLE_RAW_COLUMNS | ALLOWED_FUNCTION_NAMES | {"np"} | pandas_methods
+
     for token in tokens:
         if token.isupper() and "_" in token and token not in known_identifiers:
             warnings.append(
                 f"'{token}' looks like a column name but is not in AVAILABLE_RAW_COLUMNS — "
                 "will raise NameError at evaluation time."
+            )
+        elif (token.islower() or "_" in token) and token not in known_identifiers \
+                and not token[0].isupper() and len(token) > 2:
+            # Likely an unknown function call (e.g. ts_stddev instead of ts_std)
+            errors.append(
+                f"'{token}' is not a recognised operator. "
+                f"Did you mean one of: {sorted(fn for fn in ALLOWED_FUNCTION_NAMES if fn.startswith(token[:4]))}? "
+                f"See ALLOWED_FUNCTION_NAMES for the full list."
             )
 
 
