@@ -33,6 +33,10 @@ def export_graph_html(
         nodes_data.append({
             "id":            node_id,
             "alpha_id":      attrs.get("alpha_id", node_id),
+            "original_id":   attrs.get("original_id", node_id),
+            "batch_id":      attrs.get("batch_id") or "",
+            "ring":          int(attrs.get("ring", 0)),
+            "timestamp":     attrs.get("timestamp", ""),
             "hypothesis":    attrs.get("hypothesis", ""),
             "formula":       attrs.get("formula", ""),
             "mutation":      attrs.get("mutation", ""),
@@ -52,11 +56,12 @@ def export_graph_html(
     node_attr_map = dict(graph.nodes(data=True))
     edges_data = [
         {
-            "from":     src,
-            "to":       dst,
-            "mutation": node_attr_map.get(dst, {}).get("mutation", ""),
+            "from":      src,
+            "to":        dst,
+            "mutation":  node_attr_map.get(dst, {}).get("mutation", ""),
+            "edge_type": edata.get("type", "mutation"),
         }
-        for src, dst in graph.edges()
+        for src, dst, edata in graph.edges(data=True)
     ]
 
     html = (
@@ -165,6 +170,33 @@ _HTML_TEMPLATE = """\
     background: #fafbfc;
   }
 
+  /* ── Resize handle ──────────────────────────────── */
+  #resize-handle {
+    flex: 0 0 5px;
+    width: 5px;
+    cursor: col-resize;
+    background: transparent;
+    position: relative;
+    z-index: 10;
+    display: none;
+  }
+  #resize-handle::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: #dde1e7;
+    opacity: 0;
+    transition: opacity 0.15s;
+  }
+  #resize-handle:hover::after,
+  #resize-handle.dragging::after {
+    opacity: 1;
+  }
+  #detail-pane.open ~ #resize-handle,
+  #detail-pane.open + #resize-handle {
+    display: block;
+  }
+
   /* ── Right: detail panel (starts closed) ────────── */
   #detail-pane {
     flex: 0 0 auto;
@@ -179,9 +211,14 @@ _HTML_TEMPLATE = """\
     border-left-color: #dde1e7;
   }
 
+  #detail-pane.resizing {
+    transition: none;
+  }
+
   /* inner wrapper keeps content at full width during the slide */
   #detail-inner {
-    width: 360px;
+    width: 100%;
+    min-width: 260px;
     height: 100%;
     display: flex;
     flex-direction: column;
@@ -353,6 +390,8 @@ _HTML_TEMPLATE = """\
     <div id="mynetwork"></div>
   </div>
 
+  <div id="resize-handle"></div>
+
   <div id="detail-pane">
     <div id="detail-inner">
       <div id="detail-header">
@@ -441,23 +480,39 @@ function metricRow(label, valStr, cls) {
     + '</div>';
 }
 
+// ── Seed ring positions before building nodes ─────────────────────────────────
+(function() {
+  const ringCounts = {};
+  NODES_DATA.forEach(n => { ringCounts[n.ring] = (ringCounts[n.ring] || 0) + 1; });
+  const ringIdx = {};
+  NODES_DATA.forEach(n => {
+    if (ringIdx[n.ring] === undefined) ringIdx[n.ring] = 0;
+    const angle  = (2 * Math.PI * ringIdx[n.ring]++) / ringCounts[n.ring];
+    const radius = 120 + n.ring * 220;
+    n.x = radius * Math.cos(angle);
+    n.y = radius * Math.sin(angle);
+  });
+})();
+
 // ── Build vis-network nodes ───────────────────────────────────────────────────
 const visNodes = new vis.DataSet(NODES_DATA.map(n => {
   const bg = nodeColor(n.verdict);
   return {
     id:    n.id,
-    label: n.alpha_id + '\\nS:' + n.Sharpe.toFixed(2) + '  IC:' + n.ICIR.toFixed(2),
-    shape: 'box',
+    label: 'S:' + n.Sharpe.toFixed(2) + '\\nIC:' + n.IC_mean.toFixed(3),
+    x:     n.x,
+    y:     n.y,
+    shape: 'circle',
+    size:  44,
     color: {
       background: bg,
       border: bg,
       highlight: { background: bg, border: '#333333' },
     },
-    font: { color: '#ffffff', size: 14, face: 'Inter', bold: { size: 15, color: '#ffffff' } },
+    font: { color: '#ffffff', size: 12, face: 'Inter', multi: false },
     borderWidth: 3,
     borderWidthSelected: 4,
     shapeProperties: { borderDashes: n.verdict === 'failed' ? [5, 3] : false },
-    margin: { top: 9, right: 12, bottom: 9, left: 12 },
   };
 }));
 
@@ -468,9 +523,10 @@ const visEdges = new vis.DataSet(EDGES_DATA.map((e, i) => ({
   to:    e.to,
   label: e.mutation ? e.mutation.substring(0, 35) : '',
   font:  { size: 12, color: '#5a6480', align: 'middle', strokeWidth: 2, strokeColor: '#ffffff' },
-  color: { color: '#9aa5be', highlight: '#3949ab' },
+  color: { color: '#e67e22', highlight: '#d35400' },
+  width: 2.5,
   arrows: 'to',
-  smooth: { type: 'curvedCW', roundness: 0.08 },
+  smooth: { type: 'curvedCW', roundness: 0.12 },
 })));
 
 // ── Initialise network ────────────────────────────────────────────────────────
@@ -479,27 +535,30 @@ const network = new vis.Network(
   container,
   { nodes: visNodes, edges: visEdges },
   {
-    physics: { enabled: false },
-    layout: {
-      hierarchical: {
-        enabled: true,
-        direction: 'UD',
-        sortMethod: 'directed',
-        levelSeparation: 130,
-        nodeSpacing: 190,
-        treeSpacing: 220,
+    physics: {
+      enabled: true,
+      repulsion: {
+        nodeDistance: 180,
+        springLength: 200,
+        springConstant: 0.04,
+        damping: 0.15,
       },
+      solver: 'repulsion',
+      stabilization: { iterations: 200, updateInterval: 25 },
     },
+    layout: { improvedLayout: false },
     interaction: { hover: false, tooltipDelay: 9999 },
   }
 );
 
 // ── Panel open / close ────────────────────────────────────────────────────────
-const detailPane = document.getElementById('detail-pane');
+const detailPane    = document.getElementById('detail-pane');
+const resizeHandle  = document.getElementById('resize-handle');
 
 function openPanel() {
   if (detailPane.classList.contains('open')) return;
   detailPane.classList.add('open');
+  resizeHandle.style.display = 'block';
   detailPane.addEventListener('transitionend', function h(e) {
     if (e.propertyName !== 'width') return;
     network.redraw();
@@ -510,12 +569,50 @@ function openPanel() {
 function closePanel() {
   if (!detailPane.classList.contains('open')) return;
   detailPane.classList.remove('open');
+  resizeHandle.style.display = 'none';
   detailPane.addEventListener('transitionend', function h(e) {
     if (e.propertyName !== 'width') return;
     network.fit({ animation: { duration: 350, easingFunction: 'easeInOutQuad' } });
     detailPane.removeEventListener('transitionend', h);
   });
 }
+
+// ── Resize handle drag ────────────────────────────────────────────────────────
+(function() {
+  let dragging = false;
+  let startX   = 0;
+  let startW   = 0;
+
+  resizeHandle.addEventListener('mousedown', function(e) {
+    if (!detailPane.classList.contains('open')) return;
+    dragging = true;
+    startX   = e.clientX;
+    startW   = detailPane.offsetWidth;
+    detailPane.classList.add('resizing');
+    resizeHandle.classList.add('dragging');
+    document.body.style.cursor    = 'col-resize';
+    document.body.style.userSelect = 'none';
+    e.preventDefault();
+  });
+
+  document.addEventListener('mousemove', function(e) {
+    if (!dragging) return;
+    const delta = startX - e.clientX;
+    const newW  = Math.min(700, Math.max(220, startW + delta));
+    detailPane.style.width = newW + 'px';
+    document.getElementById('detail-inner').style.minWidth = newW + 'px';
+  });
+
+  document.addEventListener('mouseup', function() {
+    if (!dragging) return;
+    dragging = false;
+    detailPane.classList.remove('resizing');
+    resizeHandle.classList.remove('dragging');
+    document.body.style.cursor     = '';
+    document.body.style.userSelect = '';
+    network.redraw();
+  });
+})();
 
 function clearDetail() {
   document.getElementById('hdr-id').textContent    = '—';
@@ -555,6 +652,11 @@ function renderDetail(n) {
   const wDD       = warnClass(n.max_drawdown, T.drawdown_soft, T.drawdown_hard);
 
   let html = '';
+
+  html += '<div class="sec">ID / Batch</div>'
+        + '<div class="prose">' + esc(n.original_id)
+        + (n.batch_id ? ' &middot; ' + esc(n.batch_id) : '')
+        + '</div>';
 
   if (n.hypothesis) {
     html += '<div class="sec">Hypothesis</div>'
