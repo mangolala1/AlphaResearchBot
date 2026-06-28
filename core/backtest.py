@@ -72,7 +72,7 @@ def run_backtest(
     processed_df = processed_df.join(price_mi)
 
     # Compute full signal panel over the entire date range at once
-    signal_series = compute_signal(processed_df, alpha["raw_formula"])
+    signal_series = compute_signal(processed_df, alpha["formula"])
 
     # Generate monthly rebalancing dates
     rebal_dates = _monthly_dates(start_date, end_date, processed_df)
@@ -93,6 +93,7 @@ def run_backtest(
     quintile_rets_list: list[list[float]] = []
     top_quintile_sets: list[frozenset] = []
     bottom_quintile_sets: list[frozenset] = []
+    degraded_bin_periods: int = 0
 
     for i, date in enumerate(rebal_dates[:-1]):
         next_date = rebal_dates[i + 1]
@@ -151,20 +152,39 @@ def run_backtest(
         except KeyError:
             pass
 
-        # Portfolio simulation: five quintiles (Q1=bottom, Q5=top)
+        # Portfolio simulation: quintiles (Q1=bottom, Q5=top)
+        # Deduplicate bin edges first — duplicate quantiles collapse bins and
+        # cause a label-count mismatch when the signal has low cardinality.
         cuts = signal_aligned.quantile([0.2, 0.4, 0.6, 0.8])
-        bins = [-np.inf, cuts[0.2], cuts[0.4], cuts[0.6], cuts[0.8], np.inf]
-        labels = pd.cut(signal_aligned, bins=bins, labels=[1, 2, 3, 4, 5], duplicates="drop")
+        bins = sorted(set([-np.inf, float(cuts[0.2]), float(cuts[0.4]),
+                           float(cuts[0.6]), float(cuts[0.8]), np.inf]))
+        n_bins = len(bins) - 1
+        if n_bins < 5:
+            degraded_bin_periods += 1
+        bin_labels = list(range(1, n_bins + 1))
+        labels = pd.cut(signal_aligned, bins=bins, labels=bin_labels)
         q_rets = [
             float(fwd_ret_aligned[labels == q].mean()) if (labels == q).sum() > 0 else 0.0
-            for q in range(1, 6)
+            for q in bin_labels
         ]
-        quintile_rets_list.append(q_rets)
-        top_quintile_sets.append(frozenset(signal_aligned[labels == 5].index.tolist()))
-        bottom_quintile_sets.append(frozenset(signal_aligned[labels == 1].index.tolist()))
+        # Pad to 5 elements so downstream _compute_metrics always sees the same shape
+        q_rets_5 = (q_rets + [0.0] * 5)[:5]
+        quintile_rets_list.append(q_rets_5)
+        top_quintile_sets.append(frozenset(signal_aligned[labels == bin_labels[-1]].index.tolist()))
+        bottom_quintile_sets.append(frozenset(signal_aligned[labels == bin_labels[0]].index.tolist()))
 
-        port_ret = q_rets[4] - q_rets[0]  # Q5 - Q1
+        port_ret = q_rets[-1] - q_rets[0]  # top bin - bottom bin
         portfolio_returns.append(port_ret)
+
+    total_periods = len(ic_series)
+    if degraded_bin_periods > 0:
+        pct = 100 * degraded_bin_periods / total_periods if total_periods else 0
+        print(
+            f"  [backtest] WARNING: signal collapsed to <5 quintile bins in "
+            f"{degraded_bin_periods}/{total_periods} periods ({pct:.0f}%). "
+            "This indicates weak cross-sectional resolution — many stocks share "
+            "identical signal values."
+        )
 
     if len(ic_series) < 3:
         raise RuntimeError(
