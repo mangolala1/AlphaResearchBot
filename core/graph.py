@@ -22,6 +22,9 @@ class ResearchGraph:
         self._graph.add_node(
             record["alpha_id"],
             alpha_id=record["alpha_id"],
+            batch_id=record.get("batch_id"),
+            timestamp=record.get("timestamp", ""),
+            parent_id=record.get("parent_id"),
             hypothesis=record.get("hypothesis", ""),
             formula=record.get("formula", ""),
             mutation=record.get("mutation", ""),
@@ -40,7 +43,7 @@ class ResearchGraph:
         )
         parent_id = record.get("parent_id")
         if parent_id and parent_id in self._graph:
-            self._graph.add_edge(parent_id, record["alpha_id"])
+            self._graph.add_edge(parent_id, record["alpha_id"], type="mutation")
 
     def build_from_store(self, store: ExperimentStore) -> None:
         """Load all experiments from the store and build the graph."""
