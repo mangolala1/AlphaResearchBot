@@ -278,26 +278,6 @@ layout: { improvedLayout: false },
 ```
 Add "ID / Batch" row in `renderDetail(n)` showing `original_id` + `batch_id`.
 
-### Verification
-```bash
-python -m pytest tests/test_v3_5.py -v
-
-python scripts/plan_next.py --n 3 --save
-# each experiments/*.json gets "batch_id": "batch_202606..."
-
-python scripts/run_experiment.py --config experiments/plan_001_*.json
-
-python scripts/export_graph.py
-open reports/research_graph.html
-# Inner ring = batch 1, outer rings = later batches
-# Bold orange mutation edges, sequential alpha_001... labels
-# Detail panel: original_id + batch_id row
-
-python scripts/export_graph.py --filter-verdict promising
-python scripts/export_graph.py --filter-top 5
-python scripts/export_graph.py --filter-batch batch_20260627_...
-python scripts/export_graph.py --filter-verdict promising --include-ancestors
-```
 
 ### Running experiments to create a graph with multiple rings
 - Issue: when the signal has duplicate quantile values (many stocks get the same rank), the 4 quantile cuts aren't all unique. duplicates="drop" silently removes duplicate bin edges, leaving fewer than 5 bins, but 5 labels are still passed, causing a mismatch.

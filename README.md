@@ -30,14 +30,14 @@ Each experiment links back to its parent, building a research tree over time. Th
 
 Each run is a node in a growing research tree. Failed experiments are mutated into children that address the specific failure mode, while promising ones branch into new directions.
 
-Research progresses in **rings**: each call to `plan_next.py` generates one batch of alpha ideas that form a concentric ring. The innermost ring is the first batch; each subsequent `plan_next.py` run adds a surrounding ring. Mutations can cross rings freely and are shown as bold orange directed edges. Node color indicates verdict: red = failed, orange = revise, green = promising.
+Research progresses in **rings**: each call to `plan_next.py` generates one batch of alpha ideas that form a concentric ring. The innermost ring is the first batch; each subsequent `plan_next.py` run adds a surrounding ring. Mutations can cross rings freely and are shown as bold orange directed edges. 
 
 Clicking any node opens a side panel with three tiers of diagnostics:
-- **Tier 1 — Predictive Power**: IC mean, ICIR, monotonicity
-- **Tier 2 — Implementation**: Sharpe, turnover, max drawdown
-- **Tier 3 — Diagnostics**: IC by industry (top 4 sectors), subperiod stability, market regime Sharpe (bull/bear/high_vol/low_vol), and placebo score
+- Tier 1 — Predictive Power: IC mean, ICIR, monotonicity
+- Tier 2 — Implementation: Sharpe, turnover, max drawdown
+- Tier 3 — Diagnostics: IC by industry (top 4 sectors), subperiod stability, market regime Sharpe (bull/bear/high_vol/low_vol), and placebo score
 
-Below is a sample graph of a few experiments, showing their hypotheses, features, and Sharpe ratios.
+Below is a sample graph of a few experiments, node color indicates verdict: red = failed, orange = revise, green = promising.
 ![Example](Images%2FScreenshot%202026-06-28%20at%2022.45.10.png)
 
 ## Why This Matters
@@ -77,12 +77,6 @@ python scripts/mutate_alpha.py --parent alpha_001 --run
 
 # Visualize the full research tree
 python scripts/export_graph.py && open reports/research_graph.html
-
-# Filter the graph (flags can be combined)
-python scripts/export_graph.py --filter-verdict promising
-python scripts/export_graph.py --filter-top 10
-python scripts/export_graph.py --filter-batch batch_20260628_120000
-python scripts/export_graph.py --filter-verdict promising --include-ancestors
 ```
 
 See [COMMANDS.md](COMMANDS.md) for full usage, config options, and supported alpha features.

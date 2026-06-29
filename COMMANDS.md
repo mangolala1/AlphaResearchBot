@@ -8,7 +8,53 @@ source .venv/bin/activate
 
 ---
 
-## 1. Run an Experiment
+## 1. Plan Next Research Directions
+
+Reads the experiment database and suggests N new alpha ideas. Uses DeepSeek LLM (falls back to rule-based suggestions if the API key is missing).
+
+```bash
+python scripts/plan_next.py
+python scripts/plan_next.py --n 5
+python scripts/plan_next.py --n 3 --save
+```
+
+**What it prints:**
+```
+Suggestion 1: value screen
+  Hypothesis : Cheap stocks outperform expensive ones.
+  Formula    : rank(PRICE_TO_SALES) * -1
+  Features   : ['PRICE_TO_SALES']
+  Parent     : none (new branch)
+  Rationale  : No value-based signal has been tested yet.
+```
+
+**What it creates (with `--save`):**
+- `N` new JSON files in `experiments/`, named like:
+  - `experiments/plan_001_value_screen.json`
+  - `experiments/plan_002_quality_plus_value.json`
+  - etc.
+- These files are ready to pass directly to `run_experiment.py`
+
+**Flags:**
+
+| Flag | Effect |
+|---|---|
+| `--n <int>` | Number of suggestions to generate (default: `3`) |
+| `--save` | Save each suggestion as a JSON file in `experiments/` |
+| `--db <path>` | Use a different database (default: `db/experiments.db`) |
+
+**Typical workflow:**
+```bash
+# 1. Generate and save 3 suggestions
+python scripts/plan_next.py --n 3 --save
+
+# 2. Pick one and run it
+python scripts/run_experiment.py --config experiments/plan_001_value_screen.json
+```
+
+---
+
+## 2. Run an Experiment
 
 Runs a full backtest on an alpha config and saves the result to the database.
 
@@ -59,52 +105,6 @@ Formula    : ...
 ```bash
 python scripts/run_experiment.py --config experiments/plan_001_value_via_sales_yield.json --force
 python scripts/run_experiment.py --config experiments/my_alpha.json --no-cache
-```
-
----
-
-## 2. Plan Next Research Directions
-
-Reads the experiment database and suggests N new alpha ideas. Uses DeepSeek LLM (falls back to rule-based suggestions if the API key is missing).
-
-```bash
-python scripts/plan_next.py
-python scripts/plan_next.py --n 5
-python scripts/plan_next.py --n 3 --save
-```
-
-**What it prints:**
-```
-Suggestion 1: value screen
-  Hypothesis : Cheap stocks outperform expensive ones.
-  Formula    : rank(PRICE_TO_SALES) * -1
-  Features   : ['PRICE_TO_SALES']
-  Parent     : none (new branch)
-  Rationale  : No value-based signal has been tested yet.
-```
-
-**What it creates (with `--save`):**
-- `N` new JSON files in `experiments/`, named like:
-  - `experiments/plan_001_value_screen.json`
-  - `experiments/plan_002_quality_plus_value.json`
-  - etc.
-- These files are ready to pass directly to `run_experiment.py`
-
-**Flags:**
-
-| Flag | Effect |
-|---|---|
-| `--n <int>` | Number of suggestions to generate (default: `3`) |
-| `--save` | Save each suggestion as a JSON file in `experiments/` |
-| `--db <path>` | Use a different database (default: `db/experiments.db`) |
-
-**Typical workflow:**
-```bash
-# 1. Generate and save 3 suggestions
-python scripts/plan_next.py --n 3 --save
-
-# 2. Pick one and run it
-python scripts/run_experiment.py --config experiments/plan_001_value_screen.json
 ```
 
 ---
@@ -203,6 +203,7 @@ python scripts/export_graph.py && open reports/research_graph.html
 
 Create a `.json` file anywhere (the `experiments/` folder is conventional) with this structure:
 
+(Refer to `formula_validator.py` for allowed operators and data columns.)
 ```json
 {
   "alpha_id": "my_alpha_001",
@@ -221,47 +222,16 @@ Create a `.json` file anywhere (the `experiments/` folder is conventional) with 
 }
 ```
 
-**Supported formula operators:** `rank()`, `zscore()`, `log()`, `abs()`, `sign()`, and arithmetic `+ - * / **`
-
-**Supported features (14 total):**
-
-| Feature | Description |
-|---|---|
-| `MOM12_1` | 12-month momentum excluding last month |
-| `MOM6_1` | 6-month momentum excluding last month |
-| `VOL_20D` | 20-day rolling volatility |
-| `LIQUIDITY` | 20-day average dollar volume |
-| `EBITDA_MARGIN` | EBITDA / Revenue |
-| `SALES_GROWTH` | Year-over-year revenue growth |
-| `EPS_GROWTH` | Year-over-year EPS growth |
-| `PRICE_TO_SALES` | Price / Revenue per share |
-| `EPS_LTM` | Trailing 12-month EPS |
-| `SALES_LTM` | Trailing 12-month revenue |
-| `EBITDA_LTM` | Trailing 12-month EBITDA |
-| `COGS_LTM` | Trailing 12-month cost of goods sold |
-| `ADJUSTED_PRICE` | Split/dividend-adjusted close price |
-| `ADJUSTED_VOLUME` | Adjusted trading volume |
-
 **Config options:**
 
 | Field | Options | Notes |
 |---|---|---|
-| `universe` | `sp500`, `russell1000`, `russell3000` | Smaller = faster |
+| `universe` | `sp500`| Smaller = faster |
 | `neutralization` | `sector`, `market`, `none` | `sector` removes sector-level bias |
 | `rebalance` | `monthly`, `quarterly` | Quarterly reduces turnover |
 | `transaction_cost_bps` | integer | Cost per trade in basis points |
 | `holding_period_days` | integer | Forward return window for IC calculation |
 
-**Decision thresholds** (from `core/decision.py`):
-
-| Metric | Threshold | Verdict |
-|---|---|---|
-| Turnover | > 300 bps/yr | failed |
-| Sharpe | < 0.5 | failed |
-| ICIR | < 0.3 | failed |
-| Noise risk | high | inconclusive |
-
----
 
 ## Quick Reference
 
