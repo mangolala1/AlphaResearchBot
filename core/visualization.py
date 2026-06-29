@@ -51,6 +51,10 @@ def export_graph_html(
             "failure_reason": attrs.get("failure_reason") or "",
             "failure_category": attrs.get("failure_category") or "",
             "reflection":    attrs.get("reflection", ""),
+            "sector_stability":     dict(attrs.get("sector_stability", {})),
+            "subperiod_stability":  float(attrs.get("subperiod_stability", 0.0)),
+            "market_regime_sharpe": dict(attrs.get("market_regime_sharpe", {})),
+            "placebo_score":        float(attrs.get("placebo_score", 0.0)),
         })
 
     node_attr_map = dict(graph.nodes(data=True))
@@ -343,6 +347,17 @@ _HTML_TEMPLATE = """\
   .mval.bad   { color: #dc2626; }
 
   .warn-icon { color: #d97706; font-size: 11px; margin-left: 4px; }
+
+  /* sub-label within Tier 3 diagnostic groups */
+  .diag-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: #9aa3b5;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    margin-top: 10px;
+    margin-bottom: 2px;
+  }
 
   .failure-text {
     font-size: 13px;
@@ -699,7 +714,36 @@ function renderDetail(n) {
   html += metricRow('Max Drawdown', n.max_drawdown.toFixed(4),  wDD);
 
   html += '<div class="sec">Tier 3 &mdash; Diagnostics</div>';
-  html += metricRow('Deflated Sharpe', n.deflated_sharpe.toFixed(4), '');
+
+  // IC by Industry (top 4 by absolute IC)
+  const sectorEntries = Object.entries(n.sector_stability || {});
+  if (sectorEntries.length) {
+    html += '<div class="diag-label">IC by Industry (top 4)</div>';
+    sectorEntries
+      .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
+      .slice(0, 4)
+      .forEach(([sector, ic]) => {
+        html += metricRow(sector, ic.toFixed(4), '');
+      });
+  }
+
+  // Subperiod stability
+  html += '<div class="diag-label">Subperiod</div>';
+  html += metricRow('Stability (1H vs 2H)', n.subperiod_stability.toFixed(4), '');
+
+  // Market regime Sharpe
+  const regimeEntries = Object.entries(n.market_regime_sharpe || {});
+  if (regimeEntries.length) {
+    html += '<div class="diag-label">Market Regime Sharpe</div>';
+    regimeEntries.forEach(([regime, sharpe]) => {
+      const label = regime.replace(/_/g, ' ');
+      html += metricRow(label, sharpe.toFixed(4), '');
+    });
+  }
+
+  // Placebo score
+  html += '<div class="diag-label">Placebo</div>';
+  html += metricRow('Placebo Score', n.placebo_score.toFixed(4), '');
 
   if (n.failure_reason) {
     html += '<div class="sec">Failure Reason</div>'

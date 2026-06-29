@@ -19,6 +19,7 @@ class ResearchGraph:
         from core.memory_analyzer import classify_failure  # local import to avoid circular dep
 
         metrics = record.get("metrics", {})
+        robustness = record.get("robustness", {})
         self._graph.add_node(
             record["alpha_id"],
             alpha_id=record["alpha_id"],
@@ -40,6 +41,10 @@ class ResearchGraph:
             deflated_sharpe=metrics.get("deflated_sharpe", 0.0),
             failure_category=classify_failure(record) or "N/A",
             mutation_reason=record.get("mutation", ""),
+            sector_stability=robustness.get("sector_stability", {}),
+            subperiod_stability=robustness.get("subperiod_stability", 0.0),
+            market_regime_sharpe=robustness.get("market_regime_sharpe", {}),
+            placebo_score=robustness.get("placebo_score", 0.0),
         )
         parent_id = record.get("parent_id")
         if parent_id and parent_id in self._graph:
