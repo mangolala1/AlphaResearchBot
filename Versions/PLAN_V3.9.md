@@ -311,3 +311,5 @@ python scripts/export_graph.py --filter-verdict promising --include-ancestors
 - Fixed issue that reflection.py never sends llm the list of allowed operators such than llm makes up an operator that is not defined in this project.
 - Issue2: ffill method kept holiday dates and filled na values in the price data, which causes the backtest to run on non-trading dates and produce incorrect results.
 - Fix: joining data on prices and keeping only the dates in the price data, so that the backtest will only run on trading dates.
+- TODO: for the tier 3 diagnostics shown on html, instead of showing deflated sharpe, can we show the IC by industry, subperiod, and the placebo score.
+- 

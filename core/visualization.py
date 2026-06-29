@@ -488,7 +488,7 @@ function metricRow(label, valStr, cls) {
   NODES_DATA.forEach(n => {
     if (ringIdx[n.ring] === undefined) ringIdx[n.ring] = 0;
     const angle  = (2 * Math.PI * ringIdx[n.ring]++) / ringCounts[n.ring];
-    const radius = 120 + n.ring * 220;
+    const radius = 100 + n.ring * 160;
     n.x = radius * Math.cos(angle);
     n.y = radius * Math.sin(angle);
   });
@@ -503,13 +503,13 @@ const visNodes = new vis.DataSet(NODES_DATA.map(n => {
     x:     n.x,
     y:     n.y,
     shape: 'circle',
-    size:  44,
+    size:  56,
     color: {
       background: bg,
       border: bg,
       highlight: { background: bg, border: '#333333' },
     },
-    font: { color: '#ffffff', size: 12, face: 'Inter', multi: false },
+    font: { color: '#ffffff', size: 14, face: 'Inter', multi: false },
     borderWidth: 3,
     borderWidthSelected: 4,
     shapeProperties: { borderDashes: n.verdict === 'failed' ? [5, 3] : false },
@@ -522,7 +522,7 @@ const visEdges = new vis.DataSet(EDGES_DATA.map((e, i) => ({
   from:  e.from,
   to:    e.to,
   label: e.mutation ? e.mutation.substring(0, 35) : '',
-  font:  { size: 12, color: '#5a6480', align: 'middle', strokeWidth: 2, strokeColor: '#ffffff' },
+  font:  { size: 14, color: '#5a6480', align: 'middle', strokeWidth: 2, strokeColor: '#ffffff' },
   color: { color: '#e67e22', highlight: '#d35400' },
   width: 2.5,
   arrows: 'to',
@@ -538,8 +538,8 @@ const network = new vis.Network(
     physics: {
       enabled: true,
       repulsion: {
-        nodeDistance: 180,
-        springLength: 200,
+        nodeDistance: 140,
+        springLength: 160,
         springConstant: 0.04,
         damping: 0.15,
       },
@@ -562,7 +562,7 @@ const network = new vis.Network(
     ctx.lineWidth = 1.5;
     ctx.strokeStyle = 'rgba(120, 140, 200, 0.30)';
     for (let ring = 0; ring <= maxRing; ring++) {
-      const r = 120 + ring * 220 + 60;
+      const r = 100 + ring * 160 + 70;
       ctx.beginPath();
       ctx.arc(0, 0, r, 0, 2 * Math.PI);
       ctx.stroke();

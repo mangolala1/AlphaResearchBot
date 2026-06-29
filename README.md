@@ -30,30 +30,7 @@ Each experiment links back to its parent, building a research tree over time. Th
 
 Each run is a node in a growing research tree. Failed experiments are mutated into children that address the specific failure mode, while promising ones branch into new directions.
 Below is a sample graph of a few experiments, showing their hypotheses, features, and Sharpe ratios. The color indicates the verdict: red = failed, yellow = inconclusive, green = promising.
-```mermaid
-flowchart TD
-    A["<b>alpha_001</b><br/>quality + momentum<br/>Sharpe −0.34"]
-    B["<b>alpha_002</b><br/>quality only<br/>Sharpe −0.78"]
-    C["<b>alpha_003</b><br/>quality lagged<br/>Sharpe −0.10"]
-    D["<b>alpha_004</b><br/>quarterly rebalance<br/>Sharpe 0.42"]
-    E["<b>alpha_005</b><br/>value<br/>Sharpe 0.58"]
-    F["<b>alpha_006</b><br/>profitability<br/>Sharpe 0.31"]
-
-    A -->|remove momentum| B
-    B -->|add lag| C
-    C -->|quarterly rebalance| D
-    D -->|new branch: value| E
-    D -->|new branch: profitability| F
-
-    classDef failed fill:#e74c3c,color:#fff,stroke:none
-    classDef inconclusive fill:#f39c12,color:#fff,stroke:none
-    classDef promising fill:#2ecc71,color:#fff,stroke:none
-
-    class A,B,C failed
-    class D inconclusive
-    class E promising
-    class F failed
-```
+![Example](Images%2FScreenshot%202026-06-28%20at%2022.30.53.png)
 
 ## Why This Matters
 
