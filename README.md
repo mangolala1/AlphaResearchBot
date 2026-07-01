@@ -26,6 +26,40 @@ The system runs a closed cycle:
 
 Each experiment links back to its parent, building a research tree over time. This means you can trace exactly why an alpha exists and what it was trying to fix.
 
+```mermaid
+flowchart TB
+    subgraph sources ["Data Sources"]
+        YF["yfinance\nPrices · Volume · Universe"]
+        SF["SimFin\nFundamentals · TTM Earnings"]
+    end
+
+    subgraph engine ["Research Engine"]
+        SIG["Signal Computation\nEvaluate alpha formula"]
+        BT["Backtest\nIC · Sharpe · Turnover · Drawdown"]
+        RT["Robustness Tests\nSectors · Regimes · Subperiods · Placebo"]
+        DEC{"Decision"}
+        SIG --> BT --> RT --> DEC
+    end
+
+    subgraph feedback ["LLM Feedback Loop"]
+        REF["Reflect\nDiagnose failure mode"]
+        MUT["Mutate\nModify formula to fix weakness"]
+        PLN["Plan\nGenerate new hypothesis"]
+    end
+
+    MEM[("Experiment Memory\nMetrics · Reflection · Lineage")]
+    GR["Research Tree\nInteractive Graph"]
+
+    sources --> SIG
+    DEC -->|"failed / inconclusive"| REF
+    REF --> MUT
+    MUT --> MEM
+    DEC -->|"promising"| PLN
+    PLN --> MEM
+    MEM --> GR
+    MEM -->|"informs next alpha"| SIG
+```
+
 ## Alpha Evolution Graph
 
 Each run is a node in a growing research tree. Failed experiments are mutated into children that address the specific failure mode, while promising ones branch into new directions.
