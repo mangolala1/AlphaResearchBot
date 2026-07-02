@@ -84,14 +84,14 @@ By giving the system a persistent experiment store and LLM-powered planning, Alp
 
 The project is built in stages, each proving a different capability:
 
-| Version   | Goal |
-|-----------|---|
-| V1        | Prove the architecture with a fully mock pipeline |
-| V2        | Replace mocks with real market data (yfinance, SimFin) and a real backtest engine |
-| V3        | Add real LLM reflection, a research planner, and a full agentic loop |
-| V3.5      | Add alpha mutation and an interactive research graph |
+| Version   | Goal                                                                                                                                            |
+|-----------|-------------------------------------------------------------------------------------------------------------------------------------------------|
+| V1        | Prove the architecture with a fully mock pipeline                                                                                               |
+| V2        | Replace mocks with real market data (yfinance, SimFin) and a real backtest engine                                                               |
+| V3        | Add real LLM reflection, a research planner, and a full agentic loop                                                                            |
+| V3.5      | Add alpha mutation and an interactive research graph                                                                                            |
 | V3.9      | Ring layout with batch tracking, graph filtering flags, backtest trading-date fix, LLM formula self-correction, robustness diagnostics in graph |
-| V4 (plan) | MCP integration, literature retrieval, autonomous validation agent |
+| V4 (plan) | Objective re-design, Closing the loop with Bandit scheduler, MCP integration                                                                    |
 
 ## Quickstart
 
