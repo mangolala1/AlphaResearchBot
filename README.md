@@ -16,13 +16,14 @@ AlphaResearchBot is a proof of concept for that idea. It maintains a persistent 
 
 The system runs a closed cycle:
 
-1. **Hypothesize** — define an investment thesis and express it as a formula over financial features (e.g. `rank(EBITDA_MARGIN) + rank(MOM12_1)`)
-2. **Backtest** — run a monthly-rebalanced long-short backtest on S&P 500 data, measuring IC, Sharpe, turnover, and drawdown
-3. **Stress-test** — check whether the signal holds across sectors, market regimes, and subperiods, and whether it survives a placebo test
-4. **Decide** — apply hard thresholds to classify the experiment as `promising`, `failed`, or `inconclusive`
-5. **Reflect** — ask an LLM to diagnose the failure mode and identify what specifically to change
-6. **Evolve** — either plan a new branch of research based on the full experiment history, or mutate the failed alpha to address its specific weakness
-7. **Remember** — store everything (metrics, reflection, lineage) so future experiments can learn from it
+1. **Schedule** *(V4)* — a Thompson-sampling bandit decides whether to explore a new research direction or mutate an existing alpha, learning from the reward of every past decision
+2. **Hypothesize** — define an investment thesis and express it as a formula over financial features (e.g. `rank(EBITDA_MARGIN) + rank(MOM12_1)`)
+3. **Backtest** — run a monthly-rebalanced long-short backtest on S&P 500 data, measuring IC, Sharpe, turnover, and drawdown
+4. **Stress-test** — check whether the signal holds across sectors, market regimes, and subperiods, and whether it survives a placebo test
+5. **Score** *(V4)* — compute a continuous composite score (0–100) over five dimensions: predictive performance, robustness, implementability, **formula simplicity**, and **novelty** vs. everything tried before. The verdict (`promising` / `revise` / `revise_invert` / `failed`) falls out of score bands rather than hard cliffs, so the LLM can't game individual thresholds with ever-more-complex formulas. Scoring is direction-aware: a signal whose hypothesis was backwards (strongly negative IC/Sharpe) is flagged `revise_invert` — the cheapest fix is a sign flip — instead of being discarded
+6. **Reflect** — ask an LLM to diagnose the weakest score component and identify what specifically to change
+7. **Evolve** — either plan a new branch of research based on the full experiment history, or mutate an alpha to address its specific weakness
+8. **Remember** — store everything (metrics, score, reflection, lineage, bandit posteriors) so future experiments can learn from it
 
 Each experiment links back to its parent, building a research tree over time. This means you can trace exactly why an alpha exists and what it was trying to fix.
 
@@ -33,31 +34,34 @@ flowchart TB
         SF["SimFin\nFundamentals · TTM Earnings"]
     end
 
+    SCHED{"Bandit Scheduler\nThompson sampling:\nexplore vs mutate"}
+
+    subgraph feedback ["LLM Generation"]
+        PLN["Plan\nGenerate new hypothesis"]
+        MUT["Mutate\nModify parent formula"]
+    end
+
     subgraph engine ["Research Engine"]
         SIG["Signal Computation\nEvaluate alpha formula"]
         BT["Backtest\nIC · Sharpe · Turnover · Drawdown"]
         RT["Robustness Tests\nSectors · Regimes · Subperiods · Placebo"]
-        DEC{"Decision"}
-        SIG --> BT --> RT --> DEC
+        SCORE["Composite Score (0–100)\nPerformance · Robustness · Implementation\nSimplicity · Novelty · Direction-aware"]
+        SIG --> BT --> RT --> SCORE
     end
 
-    subgraph feedback ["LLM Feedback Loop"]
-        REF["Reflect\nDiagnose failure mode"]
-        MUT["Mutate\nModify formula to fix weakness"]
-        PLN["Plan\nGenerate new hypothesis"]
-    end
-
-    MEM[("Experiment Memory\nMetrics · Reflection · Lineage")]
+    REF["Reflect\nDiagnose weakest component"]
+    MEM[("Experiment Memory\nMetrics · Scores · Reflection\nLineage · Bandit Posteriors")]
     GR["Research Tree\nInteractive Graph"]
 
+    SCHED -->|"explore"| PLN
+    SCHED -->|"mutate parent"| MUT
+    PLN --> SIG
+    MUT --> SIG
     sources --> SIG
-    DEC -->|"failed / inconclusive"| REF
-    REF --> MUT
-    MUT --> MEM
-    DEC -->|"promising"| PLN
-    PLN --> MEM
+    SCORE --> REF --> MEM
+    SCORE -->|"reward = score improvement"| SCHED
     MEM --> GR
-    MEM -->|"informs next alpha"| SIG
+    MEM -->|"informs next alpha"| SCHED
 ```
 
 ## Alpha Evolution Graph
@@ -66,12 +70,13 @@ Each run is a node in a growing research tree. Failed experiments are mutated in
 
 Research progresses in **rings**: each call to `plan_next.py` generates one batch of alpha ideas that form a concentric ring. The innermost ring is the first batch; each subsequent `plan_next.py` run adds a surrounding ring. Mutations can cross rings freely and are shown as bold orange directed edges. 
 
-Clicking any node opens a side panel with three tiers of diagnostics:
+Clicking any node opens a side panel with the composite score and three tiers of diagnostics:
+- Composite Score *(V4)* — signal strength out of 100, an "↕ inverted" badge when the preferred direction is flipped, and the five sub-scores (performance / implementation / robustness / simplicity / novelty) color-coded green/amber/red
 - Tier 1 — Predictive Power: IC mean, ICIR, monotonicity
-- Tier 2 — Implementation: Sharpe, turnover, max drawdown
+- Tier 2 — Implementation: Sharpe, Q5-Q1 return, turnover, max drawdown
 - Tier 3 — Diagnostics: IC by industry (top 4 sectors), subperiod stability, market regime Sharpe (bull/bear/high_vol/low_vol), and placebo score
 
-Below is a sample graph of a few experiments, node color indicates verdict: red = failed, orange = revise, green = promising.
+Below is a sample graph of a few experiments, node color indicates verdict: red = failed, orange = revise, blue = revise_invert (signal real, direction wrong), green = promising.
 ![Example](Images%2FScreenshot%202026-06-28%20at%2022.45.10.png)
 
 ## Why This Matters
@@ -84,14 +89,16 @@ By giving the system a persistent experiment store and LLM-powered planning, Alp
 
 The project is built in stages, each proving a different capability:
 
-| Version   | Goal                                                                                                                                            |
-|-----------|-------------------------------------------------------------------------------------------------------------------------------------------------|
-| V1        | Prove the architecture with a fully mock pipeline                                                                                               |
-| V2        | Replace mocks with real market data (yfinance, SimFin) and a real backtest engine                                                               |
-| V3        | Add real LLM reflection, a research planner, and a full agentic loop                                                                            |
-| V3.5      | Add alpha mutation and an interactive research graph                                                                                            |
-| V3.9      | Ring layout with batch tracking, graph filtering flags, backtest trading-date fix, LLM formula self-correction, robustness diagnostics in graph |
-| V4 (plan) | Objective re-design, Closing the loop with Bandit scheduler, MCP integration                                                                    |
+| Version   | Goal                                                                                            |
+|-----------|-------------------------------------------------------------------------------------------------|
+| V1        | Prove the architecture with a fully mock pipeline                                               |
+| V2        | Replace mocks with real market data (yfinance, SimFin) and a real backtest engine               |
+| V3        | Add real LLM reflection, a research planner, and a full agentic loop                            |
+| V3.5      | Add alpha mutation and an interactive research graph                                            |
+| V3.9      | Ring layout with batch tracking, LLM formula self-correction, robustness diagnostics in graph   |
+| V4        | Objective re-design (composite score: simplicity, novelty, direction-aware), autonomous loop with Thompson-sampling bandit scheduler |
+| V5 (Plan) | MCP integration, Validation on LLM-generated reflection                                         |                 
+
 
 ## Quickstart
 
@@ -100,17 +107,54 @@ The project is built in stages, each proving a different capability:
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-# Run an experiment
+# V4: run the autonomous research loop — the bandit decides explore vs mutate
+python scripts/run_loop.py --iterations 10
+
+# Or drive the loop manually, exactly as before:
+
+# Run a single experiment
 python scripts/run_experiment.py --config experiments/sample_alpha_001.json
 
 # Let the system plan what to try next
 python scripts/plan_next.py --n 3 --save
 
-# Mutate a failed experiment
+# Mutate an experiment
 python scripts/mutate_alpha.py --parent alpha_001 --run
 
 # Visualize the full research tree
 python scripts/export_graph.py && open reports/research_graph.html
 ```
 
-See [COMMANDS.md](COMMANDS.md) for full usage, config options, and supported alpha features.
+See [COMMANDS.md](COMMANDS.md) for full usage, config options, and supported alpha features. See [CODEBASE.md](CODEBASE.md) for a per-module reference.
+
+## Testing V4
+
+```bash
+# 1. Run a short loop against a brand-new database (file is created automatically)
+python scripts/run_loop.py --iterations 5 --db db/test_experiments.db
+
+# 2. Export the graph from ONLY that database
+python scripts/export_graph.py --db db/test_experiments.db --output reports/test_graph.html
+open reports/test_graph.html
+
+# 3. Cleanup when done, clears up both experiment records and bandit posteriors
+rm db/test_experiments.db
+
+# (Optional) Created json files are harmless to keep
+rm experiments/loop_*.json
+
+# 4. Alternative (If wanting the existing experiements as bandit parents/memory)
+cp db/experiments.db db/test_experiments.db                                                  
+python scripts/run_loop.py --iterations 5 --db db/test_experiments.db                        
+# note the batch id printed at loop start, e.g. loop_20260706_120000                         
+python scripts/export_graph.py --db db/test_experiments.db --filter-batch loop_20260706_120000 --output reports/test_graph.html 
+#  Here --filter-batch (existing flag in scripts/export_graph.py) shows only the loop session's ring; 
+#  --include-ancestors to also show the parents that mutations branched from.
+```
+
+What to look for:
+- **Step 2**: the new `[ Step 5 ] Composite scoring` block prints the directional score, signal strength, and all five sub-scores; novelty ≈ 0.00 on a rerun (it's a duplicate of itself) and should be named the weakest component.
+- **Step 3**: each iteration logs the scheduler's pick and the outcome, e.g. `[2/5] mutate:alpha_x → child | score 58.1 (parent 68.4) | reward 0.29 | revise`. Reward > 0.5 means the child improved on its parent; duplicates earn 0.0. The end-of-run table shows per-arm Beta posteriors. Ctrl-C is safe — all state persists per iteration, and the next loop run resumes from the saved posteriors.
+- **Step 4**: the loop session appears as its own ring; V4 nodes are labeled with their signal strength; clicking one shows the Composite Score panel; `revise_invert` nodes are blue with an "↕ inverted" badge.
+
+Tunables live as module constants at the top of `core/decision.py` (weights, verdict bands, inversion penalty) and `core/scheduler.py` (priors, parent floor, top-K, reward scale). Two health checks worth watching early on: if `revise_invert` dominates, raise `INVERSION_PENALTY`; if the explore arm never wins, make `EXPLORE_PRIOR` more optimistic.
