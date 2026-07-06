@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 
 from core.formula_validator import FORMULA_CONSTRAINT
-from core.types import AlphaConfig, BacktestMetrics, RobustnessResult, Verdict
+from core.types import AlphaConfig, AlphaScore, BacktestMetrics, RobustnessResult, Verdict
 
 _DISCLAIMER = "[DISCLAIMER: LLM-generated hypothesis, not validated evidence]"
 
@@ -20,13 +20,14 @@ def generate_reflection(
     robustness: RobustnessResult,
     verdict: Verdict,
     failure_reason: str | None,
+    alpha_score: AlphaScore | None = None,
 ) -> str:
     """Generate a structured reflection using DeepSeek LLM, with rule-based fallback."""
     try:
-        return _llm_reflection(alpha, metrics, robustness, verdict, failure_reason)
+        return _llm_reflection(alpha, metrics, robustness, verdict, failure_reason, alpha_score)
     except Exception as exc:
         print(f"  [reflection] LLM call failed ({exc}), using rule-based fallback.")
-        return _rule_based_reflection(alpha, metrics, robustness, verdict, failure_reason)
+        return _rule_based_reflection(alpha, metrics, robustness, verdict, failure_reason, alpha_score)
 
 
 # ---------------------------------------------------------------------------
@@ -39,6 +40,7 @@ def _llm_reflection(
     robustness: RobustnessResult,
     verdict: Verdict,
     failure_reason: str | None,
+    alpha_score: AlphaScore | None = None,
 ) -> str:
     from openai import OpenAI
 
@@ -47,7 +49,7 @@ def _llm_reflection(
         raise ValueError("DEEPSEEK_API_KEY not set")
 
     client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
-    prompt = _build_prompt(alpha, metrics, robustness, verdict, failure_reason)
+    prompt = _build_prompt(alpha, metrics, robustness, verdict, failure_reason, alpha_score)
 
     response = client.chat.completions.create(
         model="deepseek-chat",
@@ -70,12 +72,36 @@ def _llm_reflection(
     return f"{_DISCLAIMER}\n\n{content}"
 
 
+def _score_block(alpha_score: AlphaScore | None) -> str:
+    if alpha_score is None:
+        return ""
+    sub = alpha_score.sub_scores
+    direction = "as stated (+1)" if alpha_score.preferred_direction == 1 else "INVERTED (-1)"
+    block = f"""
+Composite Score:
+- Directional score (hypothesis as stated): {alpha_score.total:.1f} / 100
+- Signal strength (best direction): {alpha_score.signal_strength:.1f} / 100
+- Preferred direction: {direction}
+- Sub-scores: performance {sub['performance']:.2f} | implementation {sub['implementation']:.2f} | robustness {sub['robustness']:.2f} | simplicity {sub['simplicity']:.2f} | novelty {sub['novelty']:.2f}
+The score rewards simplicity and novelty; sub-scores below 0.4 are the priority to fix.
+"""
+    if alpha_score.verdict == "revise_invert":
+        block += (
+            "IMPORTANT: The signal direction is INVERTED — the hypothesis as stated is wrong. "
+            "In 'Possible Explanation', restate the economic hypothesis in the OPPOSITE direction "
+            "and explain why the intuition was backwards. The Next Mutation should flip the "
+            "formula sign, not add complexity.\n"
+        )
+    return block
+
+
 def _build_prompt(
     alpha: AlphaConfig,
     metrics: BacktestMetrics,
     robustness: RobustnessResult,
     verdict: Verdict,
     failure_reason: str | None,
+    alpha_score: AlphaScore | None = None,
 ) -> str:
     return f"""You are reviewing a quantitative alpha factor backtest. Provide a structured analysis in exactly this format:
 
@@ -83,7 +109,7 @@ Observation: <1-2 sentences on what the numbers show>
 Failure Reason: {failure_reason if failure_reason else "N/A"}
 Possible Explanation: <1-2 sentences on why the alpha performed this way>
 Next Mutation: <1 concrete, specific change to the formula or config to try next>
-
+{_score_block(alpha_score)}
 Backtest details:
 - Formula: {alpha.get("formula")}  [execution]
 - Features: {alpha.get("features")}
@@ -120,6 +146,7 @@ def _rule_based_reflection(
     robustness: RobustnessResult,
     verdict: Verdict,
     failure_reason: str | None,
+    alpha_score: AlphaScore | None = None,
 ) -> str:
     features = alpha.get("features", [])
     formula = alpha.get("formula", "")
@@ -128,6 +155,21 @@ def _rule_based_reflection(
     possible_explanation = _possible_explanation(features, formula, metrics, robustness)
     failure_line = f"Failure Reason: {failure_reason}" if failure_reason else "Failure Reason: N/A"
     next_mutation = _next_mutation(alpha, metrics, verdict)
+
+    if verdict == "revise_invert":
+        observation = (
+            f"Signal is predictive but INVERTED: directional score "
+            f"{alpha_score.total:.1f} vs signal strength {alpha_score.signal_strength:.1f}. "
+            if alpha_score else "Signal is predictive but the hypothesis direction is inverted. "
+        ) + f"Sharpe {metrics['Sharpe']:.2f}, ICIR {metrics['ICIR']:.2f} as stated."
+        possible_explanation = (
+            "The economic intuition was backwards — the effect exists but in the opposite "
+            "direction. The hypothesis should be restated with the opposite sign."
+        )
+        next_mutation = (
+            "Multiply the formula by -1 and restate the hypothesis in the opposite "
+            "direction. Do not add complexity."
+        )
 
     return (
         f"{_DISCLAIMER}\n\n"
@@ -234,9 +276,10 @@ def _next_mutation(
             "Low ICIR indicates inconsistent signal. "
             "Add rank(VOL_20D) * -1 as a low-volatility screen to filter noisy periods."
         )
-    if verdict == "inconclusive":
+    if verdict == "revise" and metrics["noise_risk"] == "high":
+        # (was a dead `verdict == "inconclusive"` branch — that value never existed)
         return (
-            "Add a liquidity filter: multiply signal by rank(LIQUIDITY) "
+            "Add a liquidity filter: multiply signal by rank(ADJUSTED_VOLUME * ADJUSTED_PRICE) "
             "to avoid trading illiquid stocks where noise dominates."
         )
     if has_momentum and not has_quality:

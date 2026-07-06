@@ -10,20 +10,34 @@ from core.types import ExperimentRecord
 
 _CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS experiments (
-    alpha_id       TEXT PRIMARY KEY,
-    parent_id      TEXT,
-    batch_id       TEXT,
-    timestamp      TEXT NOT NULL,
-    hypothesis     TEXT,
-    formula        TEXT,
-    features       TEXT,
-    mutation       TEXT,
-    config         TEXT,
-    metrics        TEXT,
-    robustness     TEXT,
-    verdict        TEXT,
-    failure_reason TEXT,
-    reflection     TEXT
+    alpha_id            TEXT PRIMARY KEY,
+    parent_id           TEXT,
+    batch_id            TEXT,
+    timestamp           TEXT NOT NULL,
+    hypothesis          TEXT,
+    formula             TEXT,
+    features            TEXT,
+    mutation            TEXT,
+    config              TEXT,
+    metrics             TEXT,
+    robustness          TEXT,
+    verdict             TEXT,
+    failure_reason      TEXT,
+    reflection          TEXT,
+    score               REAL,
+    signal_strength     REAL,
+    preferred_direction INTEGER,
+    sub_scores          TEXT
+);
+"""
+
+_CREATE_BANDIT_TABLE = """
+CREATE TABLE IF NOT EXISTS bandit_state (
+    arm_id       TEXT PRIMARY KEY,
+    alpha        REAL NOT NULL,
+    beta         REAL NOT NULL,
+    pulls        INTEGER NOT NULL DEFAULT 0,
+    last_updated TEXT
 );
 """
 
@@ -39,10 +53,19 @@ class ExperimentStore:
     def init_db(self) -> None:
         with self._connect() as conn:
             conn.execute(_CREATE_TABLE)
-            try:
-                conn.execute("ALTER TABLE experiments ADD COLUMN batch_id TEXT")
-            except Exception:
-                pass  # column already exists
+            conn.execute(_CREATE_BANDIT_TABLE)
+            # Safe migrations for databases created before these columns existed
+            for ddl in (
+                "ALTER TABLE experiments ADD COLUMN batch_id TEXT",
+                "ALTER TABLE experiments ADD COLUMN score REAL",
+                "ALTER TABLE experiments ADD COLUMN signal_strength REAL",
+                "ALTER TABLE experiments ADD COLUMN preferred_direction INTEGER",
+                "ALTER TABLE experiments ADD COLUMN sub_scores TEXT",
+            ):
+                try:
+                    conn.execute(ddl)
+                except Exception:
+                    pass  # column already exists
 
     def save_experiment(self, record: ExperimentRecord) -> None:
         """Insert or replace an experiment record."""
@@ -61,14 +84,19 @@ class ExperimentStore:
             record.get("verdict", ""),
             record.get("failure_reason"),
             record.get("reflection", ""),
+            record.get("score"),
+            record.get("signal_strength"),
+            record.get("preferred_direction"),
+            json.dumps(record.get("sub_scores")) if record.get("sub_scores") else None,
         )
         with self._connect() as conn:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO experiments
                 (alpha_id, parent_id, batch_id, timestamp, hypothesis, formula, features,
-                 mutation, config, metrics, robustness, verdict, failure_reason, reflection)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 mutation, config, metrics, robustness, verdict, failure_reason, reflection,
+                 score, signal_strength, preferred_direction, sub_scores)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 row,
             )
@@ -84,6 +112,36 @@ class ExperimentStore:
                 "SELECT * FROM experiments WHERE alpha_id = ?", (alpha_id,)
             ).fetchone()
         return self._row_to_record(row) if row else None
+
+    # ── Bandit state (Thompson scheduler posteriors) ─────────────────────────
+
+    def load_bandit_state(self) -> dict[str, dict]:
+        """Return {arm_id: {"alpha": float, "beta": float, "pulls": int}}."""
+        with self._connect() as conn:
+            rows = conn.execute("SELECT * FROM bandit_state").fetchall()
+        return {
+            row["arm_id"]: {
+                "alpha": row["alpha"],
+                "beta": row["beta"],
+                "pulls": row["pulls"],
+            }
+            for row in rows
+        }
+
+    def upsert_bandit_arm(
+        self, arm_id: str, alpha: float, beta: float, pulls: int
+    ) -> None:
+        from datetime import datetime, timezone
+
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO bandit_state
+                (arm_id, alpha, beta, pulls, last_updated)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (arm_id, alpha, beta, pulls, datetime.now(timezone.utc).isoformat()),
+            )
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._db_path)
@@ -107,4 +165,8 @@ class ExperimentStore:
             verdict=row["verdict"],
             failure_reason=row["failure_reason"],
             reflection=row["reflection"],
+            score=row["score"],
+            signal_strength=row["signal_strength"],
+            preferred_direction=row["preferred_direction"],
+            sub_scores=json.loads(row["sub_scores"]) if row["sub_scores"] else None,
         )

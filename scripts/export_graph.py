@@ -82,12 +82,15 @@ def main() -> None:
         }
 
     if args.filter_top is not None:
-        by_sharpe = sorted(
-            to_keep,
-            key=lambda n: g.nodes[n].get("Sharpe", 0.0),
-            reverse=True,
-        )
-        to_keep = set(by_sharpe[:args.filter_top])
+        # Rank by composite score when available (>= 0), Sharpe as fallback;
+        # scored nodes always outrank unscored pre-V4 nodes.
+        def _rank_key(n):
+            score = g.nodes[n].get("signal_strength", -1.0)
+            if score is None or score < 0:
+                return (0, g.nodes[n].get("Sharpe", 0.0))
+            return (1, score)
+        by_score = sorted(to_keep, key=_rank_key, reverse=True)
+        to_keep = set(by_score[:args.filter_top])
 
     # ── Ancestor expansion ───────────────────────────────────────────────────
     if args.include_ancestors:

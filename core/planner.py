@@ -21,6 +21,36 @@ _SYSTEM_PROMPT = (
 )
 
 
+def suggestion_to_config(
+    suggestion: ResearchSuggestion,
+    alpha_id: str,
+    batch_id: str | None,
+    base_config: dict | None = None,
+) -> AlphaConfig:
+    """Convert a planner suggestion into a runnable AlphaConfig.
+
+    `base_config` (typically the first stored experiment's config) supplies
+    universe/date/cost defaults so all experiments stay comparable.
+    """
+    base = base_config or {}
+    return AlphaConfig(
+        alpha_id=alpha_id,
+        parent_id=suggestion["parent_id"],
+        batch_id=batch_id,
+        hypothesis=suggestion["hypothesis"],
+        formula=suggestion["formula"],
+        features=suggestion["features"],
+        mutation=f"Planner suggestion: {suggestion['direction']}",
+        universe=base.get("universe", "sp500"),
+        start_date=base.get("start_date", "2021-01-01"),
+        end_date=base.get("end_date", "2026-06-01"),
+        neutralization=base.get("neutralization", "sector"),
+        rebalance=base.get("rebalance", "monthly"),
+        transaction_cost_bps=base.get("transaction_cost_bps", 5),
+        holding_period_days=base.get("holding_period_days", 20),
+    )
+
+
 def plan_next_research(
     store: "ExperimentStore",  # noqa: F821
     n: int = 3,
@@ -91,7 +121,8 @@ def _build_plan_prompt(summary: MemorySummary, n: int) -> str:
     )
 
     best_lines = "\n".join(
-        f"  {e['alpha_id']} | {e['formula']} | Sharpe={e['Sharpe']:.3f} | ICIR={e['ICIR']:.3f}"
+        f"  {e['alpha_id']} | {e['formula']} | score={e.get('score', 0):.1f} | "
+        f"Sharpe={e['Sharpe']:.3f} | ICIR={e['ICIR']:.3f}"
         for e in summary["best_experiments"]
     ) or "  (none)"
 
@@ -116,6 +147,9 @@ Trend observations:
 
 Suggest {n} NEW alpha research directions that are meaningfully different from what has been tried.
 Prioritize unexplored signal types (value, quality, growth, volatility, liquidity).
+Prefer SIMPLE formulas (<= 3 operator calls) — the scoring system explicitly penalizes
+formula complexity and rewards novelty vs. prior experiments, so a simple new idea
+beats a complex re-combination of old ones.
 
 Return ONLY a JSON array of {n} objects (no markdown, no explanation):
 [

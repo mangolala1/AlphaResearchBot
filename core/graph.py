@@ -34,6 +34,13 @@ class ResearchGraph:
             reflection=record.get("reflection", ""),
             Sharpe=metrics.get("Sharpe", 0.0),
             Q5_Q1_return=metrics.get("Q5_Q1_return", 0.0),
+            score=record.get("score") if record.get("score") is not None else -1.0,
+            signal_strength=(
+                record.get("signal_strength")
+                if record.get("signal_strength") is not None else -1.0
+            ),
+            preferred_direction=record.get("preferred_direction") or 0,
+            sub_scores=record.get("sub_scores") or {},
             ICIR=metrics.get("ICIR", 0.0),
             IC_mean=metrics.get("IC_mean", 0.0),
             monotonicity=metrics.get("monotonicity", 0.0),

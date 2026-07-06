@@ -10,6 +10,7 @@ V4 does two things:
 1. **Objective redesign** — replace binary cliff verdicts with a continuous composite score (0–100) that also rewards formula simplicity, novelty, and robustness (the `robustness` param is currently *unused* in `decide()`).
 2. **Close the loop** — a Thompson-sampling bandit scheduler decides mutate-vs-explore, driven by an autonomous loop runner.
 
+
 **Design decisions** (all four are cheap to swap later):
 - Continuous score + verdicts derived from score bands (downstream consumers keep working)
 - Thompson sampling (Beta posteriors, stdlib `random.betavariate`, no new deps)

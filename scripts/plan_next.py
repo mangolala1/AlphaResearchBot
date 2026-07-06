@@ -21,7 +21,7 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 from core.memory import ExperimentStore
-from core.planner import plan_next_research
+from core.planner import plan_next_research, suggestion_to_config
 
 
 def main() -> None:
@@ -66,22 +66,7 @@ def main() -> None:
             alpha_id = f"plan_{i:03d}_{s['direction'].lower().replace(' ', '_')}"
             # Use first experiment's config as template for required fields
             base = all_records[0]["config"] if all_records else {}
-            config = {
-                "alpha_id": alpha_id,
-                "parent_id": s["parent_id"],
-                "batch_id": batch_id,
-                "hypothesis": s["hypothesis"],
-                "formula": s["formula"],
-                "features": s["features"],
-                "mutation": f"Planner suggestion: {s['direction']}",
-                "universe": base.get("universe", "sp500"),
-                "start_date": base.get("start_date", "2021-01-01"),
-                "end_date": base.get("end_date", "2026-06-01"),
-                "neutralization": base.get("neutralization", "sector"),
-                "rebalance": base.get("rebalance", "monthly"),
-                "transaction_cost_bps": base.get("transaction_cost_bps", 5),
-                "holding_period_days": base.get("holding_period_days", 20),
-            }
+            config = suggestion_to_config(s, alpha_id, batch_id, base)
             out_path = exp_dir / f"{alpha_id}.json"
             with open(out_path, "w") as f:
                 json.dump(config, f, indent=2)

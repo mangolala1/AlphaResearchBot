@@ -87,6 +87,40 @@ def _llm_mutation(record: dict) -> AlphaConfig:
     raise ValueError(f"LLM failed after 3 attempts: {last_error}")
 
 
+def _score_lines(record: dict) -> str:
+    """Composite-score block for the mutation prompt (empty for pre-V4 parents)."""
+    score = record.get("score")
+    if score is None:
+        return ""
+    sub = record.get("sub_scores") or {}
+    lines = [
+        f"- Composite Score (directional): {score:.1f} / 100",
+        f"- Signal Strength: {record.get('signal_strength', score):.1f} / 100",
+    ]
+    if sub:
+        lines.append(
+            "- Sub-scores: " + " | ".join(f"{k} {v:.2f}" for k, v in sub.items())
+        )
+    instructions = []
+    if record.get("preferred_direction") == -1:
+        instructions.append(
+            "The signal direction is INVERTED — the primary mutation is to negate the "
+            "formula (multiply by -1) AND restate the hypothesis accordingly; do not add complexity."
+        )
+    if sub.get("simplicity", 1.0) < 0.5:
+        instructions.append(
+            "Simplicity is below 0.5 — the mutation MUST reduce formula complexity "
+            "(fewer operators/features), not add terms."
+        )
+    if sub.get("novelty", 1.0) < 0.4:
+        instructions.append(
+            "Novelty is low — the mutation must change the signal source, not just re-weight terms."
+        )
+    if instructions:
+        lines.append("IMPORTANT: " + " ".join(instructions))
+    return "\n".join(lines) + "\n"
+
+
 def _build_mutation_prompt(record: dict) -> str:
     metrics = record.get("metrics", {})
     robustness = record.get("robustness", {})
@@ -103,7 +137,7 @@ Parent Alpha:
 Results:
 - Verdict: {record["verdict"].upper()}
 - Failure Reason: {record.get("failure_reason") or "N/A"}
-- IC_mean: {metrics.get("IC_mean", 0):.4f}
+{_score_lines(record)}- IC_mean: {metrics.get("IC_mean", 0):.4f}
 - ICIR: {metrics.get("ICIR", 0):.4f}
 - Sharpe: {metrics.get("Sharpe", 0):.4f}
 - Turnover: {metrics.get("turnover", 0):.4f}
@@ -169,7 +203,13 @@ def _rule_based_mutation(record: dict) -> AlphaConfig:
     has_quality = "OPERATING_INCOME_LTM" in parent_formula or "NET_INCOME_LTM" in parent_formula
     has_momentum = "shift" in parent_formula and "ADJUSTED_PRICE" in parent_formula
 
-    if turnover > 0.7:
+    if record.get("preferred_direction") == -1:
+        new_formula = f"-1 * ({parent_formula})"
+        new_rebalance = config.get("rebalance", "monthly")
+        mutation_desc = "Negated the formula — signal was real but the hypothesis direction was inverted."
+        hypothesis = f"Inverted hypothesis: the opposite of '{record.get('hypothesis', '')}' holds."
+
+    elif turnover > 0.7:
         new_formula = parent_formula
         new_rebalance = "quarterly"
         mutation_desc = "Switched rebalance frequency to quarterly to reduce turnover."

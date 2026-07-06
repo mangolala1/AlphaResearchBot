@@ -2,22 +2,58 @@
 
 from __future__ import annotations
 
-from core.decision import ICIR_SOFT, TURNOVER_MAX
+from core.decision import ICIR_SOFT, TURNOVER_MAX, score_alpha
 from core.types import ExperimentRecord, FailureCategory, MemorySummary
 from core.formula_validator import AVAILABLE_RAW_COLUMNS
+
+
+def effective_score(record: ExperimentRecord) -> float:
+    """Signal-strength score for ranking / bandit rewards.
+
+    Prefers the stored signal_strength, then the stored directional score;
+    pre-V4 rows are rescored lazily with neutral novelty 0.5 (historical
+    similarity context can't be reconstructed) and no portfolio_returns
+    (directional only).
+    """
+    stored = record.get("signal_strength")
+    if stored is not None:
+        return float(stored)
+    stored = record.get("score")
+    if stored is not None:
+        return float(stored)
+
+    metrics = record.get("metrics") or {}
+    if not metrics:
+        return 0.0
+    try:
+        result = score_alpha(
+            metrics,
+            record.get("robustness") or None,
+            record.get("formula", ""),
+            similarity_score=0.5,
+        )
+        return result.signal_strength
+    except Exception:
+        return 0.0
 
 
 def classify_failure(record: ExperimentRecord) -> str | None:
     """Return the failure category for an experiment, or None if it is promising.
 
-    Priority: high_turnover → negative_sharpe → weak_ic → high_noise → poor_robustness.
-    First match wins. Covers both 'failed' and 'revise' verdicts.
+    Priority: wrong_direction → high_turnover → negative_sharpe → weak_ic →
+    high_noise → poor_robustness → too_complex → low_novelty.
+    First match wins. Covers 'failed', 'revise' and 'revise_invert' verdicts.
     """
     if record.get("verdict") == "promising":
         return None
 
+    # revise_invert's defining trait is the direction, not the metric levels
+    if record.get("verdict") == "revise_invert":
+        return "wrong_direction"
+
     metrics = record.get("metrics") or {}
     robustness = record.get("robustness") or {}
+    sub_scores = record.get("sub_scores") or {}
 
     if metrics.get("turnover", 0.0) > TURNOVER_MAX:
         return "high_turnover"
@@ -32,6 +68,10 @@ def classify_failure(record: ExperimentRecord) -> str | None:
         or robustness.get("placebo_score", 1.0) < 0.3
     ):
         return "poor_robustness"
+    if sub_scores.get("simplicity", 1.0) < 0.3:
+        return "too_complex"
+    if sub_scores.get("novelty", 1.0) < 0.2:
+        return "low_novelty"
 
     return None
 
@@ -66,13 +106,15 @@ def analyze_memory(store: "ExperimentStore") -> MemorySummary:  # noqa: F821
             failure_category_counts[cat] = failure_category_counts.get(cat, 0) + 1
 
     promising = [r for r in records if r.get("verdict") == "promising"]
-    promising.sort(key=lambda r: (r.get("metrics") or {}).get("Sharpe", float("-inf")), reverse=True)
+    promising.sort(key=effective_score, reverse=True)
     best_experiments = [
         {
             "alpha_id": r["alpha_id"],
             "formula": r.get("formula", ""),
             "Sharpe": (r.get("metrics") or {}).get("Sharpe", 0.0),
             "ICIR": (r.get("metrics") or {}).get("ICIR", 0.0),
+            "score": round(effective_score(r), 1),
+            "preferred_direction": r.get("preferred_direction") or 1,
         }
         for r in promising[:3]
     ]
@@ -105,7 +147,7 @@ def _build_trend_observations(
     observations: list[str] = []
     total = len(records)
     total_failures = sum(
-        verdict_counts.get(v, 0) for v in ("failed", "revise")
+        verdict_counts.get(v, 0) for v in ("failed", "revise", "revise_invert")
     )
 
     if total_failures > 0 and failure_category_counts:
@@ -118,7 +160,8 @@ def _build_trend_observations(
     if best_experiments:
         best = best_experiments[0]
         observations.append(
-            f"Best Sharpe so far: {best['Sharpe']:.3f} ({best['alpha_id']})."
+            f"Best score so far: {best['score']:.1f} "
+            f"({best['alpha_id']}, Sharpe {best['Sharpe']:.3f})."
         )
     else:
         observations.append("No promising experiments yet.")

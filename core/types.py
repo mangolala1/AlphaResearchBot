@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal, TypedDict
+from typing import Literal, NotRequired, TypedDict
 
 
-Verdict = Literal["promising", "revise", "failed"]
+# "revise_invert": the signal is real but the hypothesis direction was wrong —
+# treated as revise-equivalent downstream (parent-pool eligible), but semantically
+# distinct so the system learns the economic intuition was inverted, not weak.
+Verdict = Literal["promising", "revise", "revise_invert", "failed"]
 
 
 class AlphaConfig(TypedDict, total=False):
     alpha_id: str
     parent_id: str | None
+    batch_id: str | None
     hypothesis: str
     formula: str       # execution formula — uses raw column names as panel DataFrames
     features: list[str]
@@ -44,6 +48,33 @@ class RobustnessResult(TypedDict):
     placebo_score: float
 
 
+class SubScores(TypedDict):
+    """Composite-score components, each in [0, 1]."""
+    performance: float
+    implementation: float
+    robustness: float
+    simplicity: float
+    novelty: float
+
+
+@dataclass
+class AlphaScore:
+    """Result of score_alpha() — direction-aware composite score.
+
+    `total` evaluates the hypothesis AS STATED (sign preserved) so the system
+    learns whether the economic intuition was correct. `signal_strength` is
+    what parent-pool survival and bandit rewards use: the better of the two
+    directions, minus an inversion penalty.
+    """
+    total: float                 # 0-100, directional score (hypothesis as stated)
+    signal_strength: float       # 0-100, max(total, inverted_total - INVERSION_PENALTY)
+    preferred_direction: int     # +1 (as stated) or -1 (inverted works better)
+    sub_scores: SubScores        # directional sub-scores
+    verdict: Verdict             # derived from bands on signal_strength
+    failure_reason: str | None
+    fatal: bool                  # a catastrophic hard gate fired
+
+
 class ExperimentRecord(TypedDict):
     alpha_id: str
     parent_id: str | None
@@ -59,6 +90,11 @@ class ExperimentRecord(TypedDict):
     verdict: Verdict
     failure_reason: str | None
     reflection: str
+    # V4 composite-score fields (None on records saved before V4)
+    score: NotRequired[float | None]                # directional total, 0-100
+    signal_strength: NotRequired[float | None]      # max-direction score, 0-100
+    preferred_direction: NotRequired[int | None]    # +1 or -1
+    sub_scores: NotRequired[dict | None]            # SubScores as plain dict
 
 
 class BacktestResult(TypedDict):
@@ -95,7 +131,8 @@ class ResearchSuggestion(TypedDict):
 
 
 FailureCategory = Literal[
-    "high_turnover", "weak_ic", "negative_sharpe", "high_noise", "poor_robustness"
+    "high_turnover", "weak_ic", "negative_sharpe", "high_noise", "poor_robustness",
+    "too_complex", "low_novelty", "wrong_direction",
 ]
 
 

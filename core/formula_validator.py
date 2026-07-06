@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import re
 from datetime import datetime
 
@@ -339,6 +340,38 @@ def _build_cross_sectional_namespace(cross_section: dict[str, pd.Series]) -> dic
 
 def _tokenize(formula: str) -> list[str]:
     return re.findall(r"[A-Za-z_][A-Za-z0-9_]*", formula)
+
+
+# ---------------------------------------------------------------------------
+# Formula complexity — used by decision.score_alpha's simplicity sub-score
+# ---------------------------------------------------------------------------
+
+_COMPLEXITY_NODE_TYPES = (ast.Call, ast.BinOp, ast.UnaryOp, ast.Compare)
+
+
+def formula_complexity(formula: str) -> int:
+    """Structural complexity: n_calls + max_expr_depth + n_distinct_columns.
+
+    Calibration: `rank(X) * -1` → 4; the quality+value fallback formula
+    (`rank(A/B) + rank(C/(D/E)) * -1`) → ~11; heavily nested LLM-gamed
+    formulas land ≥ 20. Falls back to token count // 2 on SyntaxError.
+    """
+    try:
+        tree = ast.parse(formula, mode="eval")
+    except SyntaxError:
+        return len(_tokenize(formula)) // 2
+
+    n_calls = sum(isinstance(node, ast.Call) for node in ast.walk(tree))
+    depth = _expr_depth(tree.body)
+    n_cols = len(set(_tokenize(formula)) & AVAILABLE_RAW_COLUMNS)
+    return n_calls + depth + n_cols
+
+
+def _expr_depth(node: ast.AST) -> int:
+    """Max nesting depth counting only Call/BinOp/UnaryOp/Compare nodes."""
+    own = 1 if isinstance(node, _COMPLEXITY_NODE_TYPES) else 0
+    child_depths = [_expr_depth(child) for child in ast.iter_child_nodes(node)]
+    return own + (max(child_depths) if child_depths else 0)
 
 
 def _validate_formula_tokens(
