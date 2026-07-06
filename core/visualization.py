@@ -42,6 +42,7 @@ def export_graph_html(
             "mutation":      attrs.get("mutation", ""),
             "verdict":       attrs.get("verdict", ""),
             "Sharpe":        float(attrs.get("Sharpe", 0.0)),
+            "Q5_Q1_return":  float(attrs.get("Q5_Q1_return", 0.0)),
             "ICIR":          float(attrs.get("ICIR", 0.0)),
             "IC_mean":       float(attrs.get("IC_mean", 0.0)),
             "monotonicity":  float(attrs.get("monotonicity", 0.0)),
@@ -710,6 +711,7 @@ function renderDetail(n) {
 
   html += '<div class="sec">Tier 2 &mdash; Implementation</div>';
   html += metricRow('Sharpe',       n.Sharpe.toFixed(4),        wSharpe);
+  html += metricRow('Q5-Q1 Return', n.Q5_Q1_return.toFixed(4),  '');
   html += metricRow('Turnover',     n.turnover.toFixed(4),      wTurnover);
   html += metricRow('Max Drawdown', n.max_drawdown.toFixed(4),  wDD);
 

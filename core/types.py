@@ -29,6 +29,7 @@ class BacktestMetrics(TypedDict):
     IC_mean: float
     ICIR: float
     Sharpe: float
+    Q5_Q1_return: float
     turnover: float
     monotonicity: float
     max_drawdown: float

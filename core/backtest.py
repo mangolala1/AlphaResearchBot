@@ -249,6 +249,9 @@ def _compute_metrics(
     ret_std = float(np.std(rets, ddof=1)) + 1e-9
     sharpe = ret_mean / ret_std * np.sqrt(12)  # annualised (monthly periods)
 
+    # Q5-Q1 return: average per-period long-short spread (top quintile - bottom quintile)
+    q5_q1_return = ret_mean
+
     max_drawdown = _max_drawdown(rets)
     deflated_sharpe = _deflated_sharpe(rets, sharpe)
     long_turnover = _compute_turnover(top_quintile_sets)
@@ -271,6 +274,7 @@ def _compute_metrics(
         IC_mean=round(ic_mean, 4),
         ICIR=round(icir, 4),
         Sharpe=round(float(sharpe), 4),
+        Q5_Q1_return=round(q5_q1_return, 4),
         turnover=round(turnover, 4),
         monotonicity=round(monotonicity, 4),
         max_drawdown=round(max_drawdown, 4),
@@ -314,6 +318,7 @@ def _max_drawdown(returns: np.ndarray) -> float:
     return float(np.min(drawdowns))
 
 
+# TODO: modify the function so that it takes n_trials=experiment_number as a parameter
 def _deflated_sharpe(returns: np.ndarray, sharpe: float) -> float:
     """Sharpe ratio haircut using López de Prado (2013) SR standard error."""
     n = len(returns)
