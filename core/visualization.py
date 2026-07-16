@@ -8,10 +8,9 @@ from pathlib import Path
 import networkx as nx
 
 _VERDICT_COLORS = {
-    "promising":     "#2ecc71",
-    "revise":        "#f39c12",
-    "revise_invert": "#3498db",
-    "failed":        "#e74c3c",
+    "promising": "#2ecc71",
+    "revise":    "#f39c12",
+    "failed":    "#e74c3c",
 }
 _DEFAULT_COLOR = "#95a5a6"
 
@@ -45,8 +44,8 @@ def export_graph_html(
             "Sharpe":        float(attrs.get("Sharpe", 0.0)),
             "Q5_Q1_return":  float(attrs.get("Q5_Q1_return", 0.0)),
             "score":            float(attrs.get("score", -1.0)),
-            "signal_strength":  float(attrs.get("signal_strength", -1.0)),
-            "preferred_direction": int(attrs.get("preferred_direction", 0)),
+            "predictive_magnitude": float(attrs.get("predictive_magnitude", -1.0)),
+            "direction_status": attrs.get("direction_status") or "",
             "sub_scores":       dict(attrs.get("sub_scores", {})),
             "ICIR":          float(attrs.get("ICIR", 0.0)),
             "IC_mean":       float(attrs.get("IC_mean", 0.0)),
@@ -149,7 +148,6 @@ _HTML_TEMPLATE = """\
   .chip-total     { background: #e8eaf6; color: #3949ab; }
   .chip-promising { background: #e8f5e9; color: #2e7d32; }
   .chip-revise    { background: #fff8e1; color: #f57f17; }
-  .chip-invert    { background: #e3f2fd; color: #1565c0; }
   .chip-failed    { background: #fce4e4; color: #c62828; }
   .chip-sharpe    { background: #e3f2fd; color: #1565c0; }
   .chip-ic        { background: #f3e5f5; color: #6a1b9a; }
@@ -389,7 +387,7 @@ _HTML_TEMPLATE = """\
     font-size: 12px;
     color: #7a8499;
   }
-  .score-invert {
+  .score-direction {
     font-size: 11px;
     font-weight: 700;
     color: #1565c0;
@@ -416,10 +414,6 @@ _HTML_TEMPLATE = """\
   <span class="stat-chip chip-revise">
     <span class="chip-label">Revise</span>
     <span id="stat-revise">—</span>
-  </span>
-  <span class="stat-chip chip-invert">
-    <span class="chip-label">Invert</span>
-    <span id="stat-invert">—</span>
   </span>
   <span class="stat-chip chip-failed">
     <span class="chip-label">Failed</span>
@@ -484,7 +478,6 @@ const T = {
   const total     = NODES_DATA.length;
   const promising = NODES_DATA.filter(n => n.verdict === 'promising').length;
   const revise    = NODES_DATA.filter(n => n.verdict === 'revise').length;
-  const invert    = NODES_DATA.filter(n => n.verdict === 'revise_invert').length;
   const failed    = NODES_DATA.filter(n => n.verdict === 'failed').length;
 
   const sharpes = NODES_DATA.map(n => n.Sharpe).filter(v => isFinite(v));
@@ -495,7 +488,6 @@ const T = {
   document.getElementById('stat-total').textContent     = total;
   document.getElementById('stat-promising').textContent = promising;
   document.getElementById('stat-revise').textContent    = revise;
-  document.getElementById('stat-invert').textContent    = invert;
   document.getElementById('stat-failed').textContent    = failed;
   document.getElementById('stat-sharpe').textContent    = bestSharpe !== null ? bestSharpe.toFixed(3) : '—';
   document.getElementById('stat-ic').textContent        = bestIC     !== null ? bestIC.toFixed(4)     : '—';
@@ -551,8 +543,8 @@ function metricRow(label, valStr, cls) {
 // ── Build vis-network nodes ───────────────────────────────────────────────────
 const visNodes = new vis.DataSet(NODES_DATA.map(n => {
   const bg = nodeColor(n.verdict);
-  const label = n.signal_strength >= 0
-    ? n.signal_strength.toFixed(0) + '\\nS:' + n.Sharpe.toFixed(2)
+  const label = n.score >= 0
+    ? n.score.toFixed(0) + '\\nS:' + n.Sharpe.toFixed(2)
     : 'S:' + n.Sharpe.toFixed(2) + '\\nIC:' + n.IC_mean.toFixed(3);
   return {
     id:    n.id,
@@ -745,16 +737,17 @@ function renderDetail(n) {
           + '<code class="formula-block">' + esc(n.formula) + '</code>';
   }
 
-  if (n.signal_strength >= 0) {
+  if (n.score >= 0) {
     html += '<div class="sec">Composite Score</div>';
     html += '<div class="score-hero">'
-          + '<span class="score-big">' + n.signal_strength.toFixed(1) + '</span>'
-          + '<span class="score-sub">/ 100 signal strength</span>'
-          + (n.preferred_direction === -1
-              ? '<span class="score-invert">&#8645; inverted</span>' : '')
+          + '<span class="score-big">' + n.score.toFixed(1) + '</span>'
+          + '<span class="score-sub">/ 100</span>'
+          + (n.direction_status === 'contradicted'
+              ? '<span class="score-direction">direction contradicted</span>' : '')
           + '</div>';
-    if (n.preferred_direction === -1) {
-      html += metricRow('Directional score', n.score.toFixed(1), 'warn');
+    if (n.predictive_magnitude >= 0) {
+      html += metricRow('Predictive magnitude', n.predictive_magnitude.toFixed(1),
+                        n.direction_status === 'contradicted' ? 'warn' : '');
     }
     const subs = n.sub_scores || {};
     ['performance', 'implementation', 'robustness', 'simplicity', 'novelty'].forEach(k => {

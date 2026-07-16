@@ -1,15 +1,20 @@
 """Signal calculation — evaluates formula and returns a (DATE, TICKER) signal.
 
 Namespace building and operator definitions live in formula_validator.py.
-Data cleaning (winsorise / standardise) lives in data_process.py.
+The winsorise / standardise helpers live in data_process.py.
 This module's sole job is to wire those two together and produce the signal
 Series that backtest.py consumes.
 
+The formula is evaluated on RAW column values (fundamentals in dollars, prices
+as-is) so ratios like CFO_LTM / REVENUE_LTM are economically meaningful.
+Cross-sectional winsorisation + standardisation are applied once, to the
+resulting signal — the only scaling step in the pipeline.
+
 Pipeline:
-  processed_df (data_process.process output)
+  processed_df (data_process.process output — raw values)
     → build_panel_namespace()      [formula_validator]
     → eval(formula, namespace)
-    → post winsorise + standardise [data_process]
+    → winsorise + standardise the resulting signal [data_process helpers]
     → (DATE, TICKER) signal Series → backtest.py
 """
 

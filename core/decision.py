@@ -11,7 +11,8 @@ import numpy as np
 
 from core.formula_validator import formula_complexity
 from core.types import (
-    AlphaScore, BacktestMetrics, RobustnessResult, SubScores, Verdict,
+    AlphaScore, BacktestMetrics, DirectionStatus, RobustnessResult, SubScores,
+    Verdict,
 )
 
 # ---------------------------------------------------------------------------
@@ -41,26 +42,23 @@ DRAWDOWN_SOFT = -0.25  # excessive but survivable drawdown
 # ---------------------------------------------------------------------------
 
 # Sub-score weights (sum to 1.0)
-W_PERFORMANCE    = 0.45
-W_ROBUSTNESS     = 0.20
-W_IMPLEMENTATION = 0.15
+W_PERFORMANCE    = 0.65
+W_IMPLEMENTATION = 0.20
 W_SIMPLICITY     = 0.10
-W_NOVELTY        = 0.10
+W_NOVELTY        = 0.05
 
-# Verdict bands applied to signal_strength
+# Verdict bands applied to the directional total
 PROMISING_MIN = 65.0
 REVISE_MIN    = 35.0
 
 # Catastrophic hard gates — only truly fatal cases
 FATAL_IC_ABS     = 0.005  # dead signal: no edge in either direction
 FATAL_SHARPE_ABS = 0.10
-FATAL_DRAWDOWN   = -0.40  # in the preferred direction
+FATAL_DRAWDOWN   = -0.40
 
-# Direction handling: inverting a wrong-direction hypothesis is not free
-INVERSION_PENALTY = 5.0   # score points
-
-# Similarity above this aborts before the backtest (enforced by the caller)
-HARD_DUPLICATE_THRESHOLD = 0.90
+# Structural (AST) similarity at or above this aborts before the backtest
+# (enforced by the caller). Novelty uses the softer combined similarity.
+HARD_DUPLICATE_THRESHOLD = 0.95
 
 # Simplicity ramp anchors (formula_complexity units)
 _COMPLEXITY_SIMPLE  = 4    # at or below → simplicity 1.0
@@ -123,13 +121,30 @@ def _robustness_score(robustness: RobustnessResult | None) -> float:
 
 
 def _composite(sub: SubScores) -> float:
+    # Robustness is reported in sub_scores as a diagnostic but excluded
+    # from the composite.
     return 100.0 * (
         W_PERFORMANCE    * sub["performance"]
-        + W_ROBUSTNESS     * sub["robustness"]
         + W_IMPLEMENTATION * sub["implementation"]
         + W_SIMPLICITY     * sub["simplicity"]
         + W_NOVELTY        * sub["novelty"]
     )
+
+
+def classify_direction(metrics: BacktestMetrics) -> DirectionStatus:
+    """Direction of the evidence relative to the stated hypothesis.
+
+    Metrics-only so legacy records (saved before direction_status was stored)
+    can be classified lazily.
+    """
+    ic, sharpe = metrics["IC_mean"], metrics["Sharpe"]
+    if abs(ic) < FATAL_IC_ABS and abs(sharpe) < FATAL_SHARPE_ABS:
+        return "uncertain"      # dead — no evidence either way
+    if ic > 0 and sharpe > 0:
+        return "supported"
+    if ic < 0 and sharpe < 0:
+        return "contradicted"
+    return "uncertain"          # mixed signs
 
 
 def score_alpha(
@@ -137,19 +152,16 @@ def score_alpha(
     robustness: RobustnessResult | None,
     formula: str,
     similarity_score: float,
-    portfolio_returns: list[float] | None = None,
 ) -> AlphaScore:
-    """Direction-aware composite score in [0, 100].
+    """Two composite scores in [0, 100] plus a direction flag.
 
-    Separates "a predictive signal exists" from "the hypothesis direction is
-    correct": `total` keeps the sign (hypothesis evaluation), while
-    `signal_strength = max(total, inverted_total - INVERSION_PENALTY)` lets a
-    real-but-inverted alpha survive into the parent pool with verdict
-    "revise_invert" instead of "failed".
-
-    `portfolio_returns` (per-period long-short returns from the backtest)
-    enables exact inverted-direction drawdown/deflated-Sharpe; when None
-    (e.g. lazy rescore of pre-V4 rows) only the directional score is computed.
+    `total` uses the raw signed metrics — the hypothesis exactly as stated —
+    and drives verdict bands and diagnostics. `predictive_magnitude` uses
+    abs() metrics — "a signal exists here", direction-blind — and drives
+    parent eligibility and bandit rewards. A contradicted direction is
+    recorded in failure_reason and direction_status, never as its own verdict,
+    and never worth a sign-flip re-run (the mirrored backtest carries no new
+    information).
     """
     ic_mean  = metrics["IC_mean"]
     icir     = metrics["ICIR"]
@@ -163,7 +175,6 @@ def score_alpha(
     s_simple  = 1.0 - _ramp(formula_complexity(formula), _COMPLEXITY_SIMPLE, _COMPLEXITY_GAMED)
     s_novelty = float(np.clip(1.0 - similarity_score, 0.0, 1.0))
 
-    # --- Directional score: the hypothesis exactly as stated -----------------
     sub_scores = SubScores(
         performance=_performance_score(ic_mean, icir, sharpe, deflated, mono),
         implementation=_implementation_score(turnover, max_dd),
@@ -173,33 +184,28 @@ def score_alpha(
     )
     total = _composite(sub_scores)
 
-    # --- Inverted score: same signal traded with the opposite sign -----------
-    inverted_total: float | None = None
-    inv_max_dd = max_dd
-    if portfolio_returns is not None and len(portfolio_returns) >= 4:
-        from core.backtest import _deflated_sharpe, _max_drawdown  # local: avoid heavy import at module load
+    # Magnitude composite: performance on abs() metrics, all other sub-scores
+    # shared. Drawdown stays as-stated — the mirrored drawdown path is not
+    # reconstructable from stored metrics.
+    magnitude_sub = SubScores(
+        performance=_performance_score(
+            abs(ic_mean), abs(icir), abs(sharpe), abs(deflated), abs(mono)
+        ),
+        implementation=sub_scores["implementation"],
+        robustness=s_robust,
+        simplicity=s_simple,
+        novelty=s_novelty,
+    )
+    predictive_magnitude = _composite(magnitude_sub)
 
-        inv_rets = -np.asarray(portfolio_returns, dtype=float)
-        inv_sharpe = -sharpe  # mean negates, std unchanged
-        inv_deflated = _deflated_sharpe(inv_rets, inv_sharpe)
-        inv_max_dd = _max_drawdown(inv_rets)  # drawdown paths do NOT simply negate
-        inv_sub = SubScores(
-            performance=_performance_score(-ic_mean, -icir, inv_sharpe, inv_deflated, -mono),
-            implementation=_implementation_score(turnover, inv_max_dd),
-            robustness=s_robust,   # stability/placebo treated as direction-agnostic
-            simplicity=s_simple,
-            novelty=s_novelty,
+    direction_status = classify_direction(metrics)
+    direction_note: str | None = None
+    if direction_status == "contradicted":
+        direction_note = (
+            f"direction contradicted (IC_mean {ic_mean:.4f}, Sharpe {sharpe:.2f}; "
+            f"magnitude score {predictive_magnitude:.1f} vs directional {total:.1f}) — "
+            "the mirrored signal is already measured; do not re-test a sign flip"
         )
-        inverted_total = _composite(inv_sub)
-
-    if inverted_total is not None and inverted_total - INVERSION_PENALTY > total:
-        signal_strength = inverted_total - INVERSION_PENALTY
-        preferred_direction = -1
-        preferred_max_dd = inv_max_dd
-    else:
-        signal_strength = total
-        preferred_direction = 1
-        preferred_max_dd = max_dd
 
     # --- Fatal gates ----------------------------------------------------------
     fatal_reasons: list[str] = []
@@ -208,57 +214,50 @@ def score_alpha(
             f"dead signal: |IC_mean| {abs(ic_mean):.4f} < {FATAL_IC_ABS} and "
             f"|Sharpe| {abs(sharpe):.4f} < {FATAL_SHARPE_ABS} (no edge in either direction)"
         )
-    if preferred_max_dd <= FATAL_DRAWDOWN:
+    if max_dd <= FATAL_DRAWDOWN:
         fatal_reasons.append(
-            f"max_drawdown {preferred_max_dd:.4f} ≤ {FATAL_DRAWDOWN} in the preferred direction"
+            f"max_drawdown {max_dd:.4f} ≤ {FATAL_DRAWDOWN}"
         )
 
     if fatal_reasons:
-        signal_strength = min(signal_strength, 25.0)
+        failure_reason = "fatal — " + "; ".join(fatal_reasons)
+        if direction_note:
+            failure_reason += f"; {direction_note}"
         return AlphaScore(
             total=round(total, 2),
-            signal_strength=round(signal_strength, 2),
-            preferred_direction=preferred_direction,
+            predictive_magnitude=round(predictive_magnitude, 2),
+            direction_status=direction_status,
             sub_scores=sub_scores,
             verdict="failed",
-            failure_reason="fatal — " + "; ".join(fatal_reasons),
+            failure_reason=failure_reason,
             fatal=True,
         )
 
-    # --- Verdict bands on signal_strength --------------------------------------
-    if signal_strength >= PROMISING_MIN:
-        band: Verdict = "promising"
-    elif signal_strength >= REVISE_MIN:
-        band = "revise"
+    # --- Verdict bands on the directional total --------------------------------
+    if total >= PROMISING_MIN:
+        verdict: Verdict = "promising"
+        failure_reason = None
     else:
-        band = "failed"
-
-    if band != "failed" and preferred_direction == -1:
-        verdict: Verdict = "revise_invert"
-        failure_reason = (
-            f"signal is real but direction is inverted "
-            f"(directional {total:.1f}, inverted {inverted_total:.1f}) — "
-            "hypothesis direction was wrong; flip the formula sign and restate the hypothesis"
-        )
-    elif band == "promising":
-        verdict, failure_reason = "promising", None
-    else:
-        verdict = band
-        weakest = min(sub_scores, key=sub_scores.__getitem__)
+        verdict = "revise" if total >= REVISE_MIN else "failed"
+        # robustness is diagnostic-only — don't blame it for a low composite
+        scored = {k: v for k, v in sub_scores.items() if k != "robustness"}
+        weakest = min(scored, key=scored.__getitem__)
         detail = ""
         if weakest == "simplicity":
             detail = f", formula complexity {formula_complexity(formula)}"
         elif weakest == "novelty":
             detail = f", similarity {similarity_score:.2f}"
         failure_reason = (
-            f"score {signal_strength:.1f} — weakest component: "
+            f"score {total:.1f} — weakest component: "
             f"{weakest} ({sub_scores[weakest]:.2f}{detail})"
         )
+        if direction_note:
+            failure_reason += f"; {direction_note}"
 
     return AlphaScore(
         total=round(total, 2),
-        signal_strength=round(signal_strength, 2),
-        preferred_direction=preferred_direction,
+        predictive_magnitude=round(predictive_magnitude, 2),
+        direction_status=direction_status,
         sub_scores=sub_scores,
         verdict=verdict,
         failure_reason=failure_reason,

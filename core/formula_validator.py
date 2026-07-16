@@ -16,12 +16,13 @@ from core.types import AlphaConfig, ValidationResult
 # ---------------------------------------------------------------------------
 
 # All raw data columns available in the processed panel (output of data_process.py).
-# Prices are joined back as-is; fundamentals are winsorised + standardised + ffilled.
+# All values are RAW: prices as-is, fundamentals in reported dollars (ffilled to
+# daily). The evaluated signal — not the inputs — is winsorised + standardised.
 AVAILABLE_RAW_COLUMNS: frozenset[str] = frozenset({
-    # Price (raw, not standardised)
+    # Price (raw)
     "ADJUSTED_PRICE",
     "ADJUSTED_VOLUME",
-    # Income statement — TTM, cross-sectionally winsorised + standardised
+    # Income statement — TTM, raw dollar values
     "REVENUE_LTM",
     "COGS_LTM",
     "GROSS_PROFIT_LTM",
@@ -39,7 +40,7 @@ AVAILABLE_RAW_COLUMNS: frozenset[str] = frozenset({
     "EPS_DILUTED",
     "SHARES_BASIC",
     "SHARES_DILUTED",
-    # Cash flow statement — TTM, cross-sectionally winsorised + standardised
+    # Cash flow statement — TTM, raw dollar values
     "NET_INCOME_START_LTM",
     "DA_LTM",
     "NON_CASH_ITEMS_LTM",
@@ -76,10 +77,14 @@ ALLOWED_UNIVERSES: set[str] = {"sp500"}
 # Canonical operator reference injected into every LLM prompt that may produce a formula.
 FORMULA_CONSTRAINT: str = (
     "IMPORTANT — `formula` uses raw DataFrame column names directly.\n"
-    "Each column is a full DATE × TICKER pandas DataFrame.\n"
-    "All fundamental columns are already winsorized and standardized cross-sectionally "
-    "(z-scored per date) — do NOT apply zscore() or rank() as a first step on raw "
-    "fundamentals; use them to combine or transform signals.\n"
+    "Each column is a full DATE × TICKER pandas DataFrame of RAW values: prices as-is, "
+    "fundamentals in reported dollars (TTM). Nothing is pre-scaled.\n"
+    "Because raw columns differ by orders of magnitude across stocks:\n"
+    "  - Ratios between raw columns ARE economically meaningful (e.g. CFO_LTM / REVENUE_LTM).\n"
+    "  - NEVER add or subtract raw columns of different units/scales directly — "
+    "combine via ratios, or rank()/zscore() each term first.\n"
+    "The final signal is automatically winsorized (1%/99%) and z-scored cross-sectionally "
+    "after evaluation — do NOT add a trailing zscore()/scale() just to normalize output.\n"
     f"Available columns: {', '.join(sorted(AVAILABLE_RAW_COLUMNS))}\n"
     "\n"
     "Cross-sectional operators (across tickers per date):\n"
@@ -132,6 +137,18 @@ def validate_alpha(alpha: AlphaConfig) -> ValidationResult:
     # 2. Formula validation
     formula = alpha.get("formula", "")
     _validate_formula_tokens(formula, errors, warnings)
+
+    # 2b. Declared features vs actual formula columns — LLM-declared metadata
+    # can drift from the formula. Similarity extracts columns from the formula
+    # itself; flag the mismatch so it stays visible.
+    declared_cols = set(alpha.get("features") or []) & AVAILABLE_RAW_COLUMNS
+    actual_cols = set(_tokenize(formula)) & AVAILABLE_RAW_COLUMNS
+    missing = declared_cols - actual_cols
+    if missing:
+        warnings.append(
+            f"Declared features not referenced by the formula: {sorted(missing)} — "
+            "similarity uses columns extracted from the formula itself."
+        )
 
     # 3. Universe
     if alpha.get("universe") not in ALLOWED_UNIVERSES:
@@ -398,9 +415,12 @@ def _validate_formula_tokens(
 
     for token in tokens:
         if token.isupper() and "_" in token and token not in known_identifiers:
-            warnings.append(
-                f"'{token}' looks like a column name but is not in AVAILABLE_RAW_COLUMNS — "
-                "will raise NameError at evaluation time."
+            # A guaranteed NameError at evaluation time — fail fast at
+            # generation, where the LLM retry loop can fix it, instead of
+            # burning a backtest_error.
+            errors.append(
+                f"'{token}' is not an available data column — only income-statement "
+                "and cash-flow columns are loaded. Use columns from AVAILABLE_RAW_COLUMNS."
             )
         elif (token.islower() or "_" in token) and token not in known_identifiers \
                 and not token[0].isupper() and len(token) > 2:

@@ -6,10 +6,15 @@ from dataclasses import dataclass, field
 from typing import Literal, NotRequired, TypedDict
 
 
-# "revise_invert": the signal is real but the hypothesis direction was wrong —
-# treated as revise-equivalent downstream (parent-pool eligible), but semantically
-# distinct so the system learns the economic intuition was inverted, not weak.
-Verdict = Literal["promising", "revise", "revise_invert", "failed"]
+# Direction is not a separate research outcome: a real-but-inverted signal is
+# just "failed" (or "revise"), with the contradiction recorded in failure_reason.
+Verdict = Literal["promising", "revise", "failed"]
+
+# Direction of the evidence relative to the stated hypothesis:
+# "supported"    — IC and Sharpe both positive with real magnitude
+# "contradicted" — IC and Sharpe both negative with real magnitude
+# "uncertain"    — dead signal or mixed signs
+DirectionStatus = Literal["supported", "contradicted", "uncertain"]
 
 
 class AlphaConfig(TypedDict, total=False):
@@ -59,18 +64,19 @@ class SubScores(TypedDict):
 
 @dataclass
 class AlphaScore:
-    """Result of score_alpha() — direction-aware composite score.
+    """Result of score_alpha() — two composites plus a direction flag.
 
-    `total` evaluates the hypothesis AS STATED (sign preserved) so the system
-    learns whether the economic intuition was correct. `signal_strength` is
-    what parent-pool survival and bandit rewards use: the better of the two
-    directions, minus an inversion penalty.
+    `total` evaluates the hypothesis AS STATED (raw signed metrics) — verdicts
+    and diagnostics use it. `predictive_magnitude` scores the same alpha on
+    abs() metrics — "a signal exists here", direction-blind — and drives parent
+    eligibility and bandit rewards. `direction_status` says whether the
+    evidence supported or contradicted the stated direction.
     """
-    total: float                 # 0-100, directional score (hypothesis as stated)
-    signal_strength: float       # 0-100, max(total, inverted_total - INVERSION_PENALTY)
-    preferred_direction: int     # +1 (as stated) or -1 (inverted works better)
+    total: float                 # 0-100, composite on raw signed metrics
+    predictive_magnitude: float  # 0-100, composite on abs() metrics
+    direction_status: DirectionStatus
     sub_scores: SubScores        # directional sub-scores
-    verdict: Verdict             # derived from bands on signal_strength
+    verdict: Verdict             # derived from bands on total
     failure_reason: str | None
     fatal: bool                  # a catastrophic hard gate fired
 
@@ -92,8 +98,9 @@ class ExperimentRecord(TypedDict):
     reflection: str
     # V4 composite-score fields (None on records saved before V4)
     score: NotRequired[float | None]                # directional total, 0-100
-    signal_strength: NotRequired[float | None]      # max-direction score, 0-100
-    preferred_direction: NotRequired[int | None]    # +1 or -1
+    predictive_magnitude: NotRequired[float | None] # abs-metric composite, 0-100
+    direction_status: NotRequired[str | None]       # DirectionStatus
+    fatal: NotRequired[bool | None]                 # a catastrophic hard gate fired
     sub_scores: NotRequired[dict | None]            # SubScores as plain dict
 
 
@@ -115,9 +122,12 @@ class ValidationResult:
 
 
 class SimilarityResult(TypedDict):
-    is_unique: bool
+    is_unique: bool                # False → duplicate abort (exact or structural >= threshold)
+    is_exact_duplicate: bool       # canonical match after sign stripping
     most_similar_id: str | None
-    similarity_score: float
+    similarity_score: float        # combined research similarity → novelty = 1 - this
+    structural_similarity: float   # max sign-blind AST overlap (drives the abort)
+    feature_similarity: float      # declared-feature Jaccard vs the most similar alpha
     reason: str
 
 
@@ -141,6 +151,7 @@ class MemorySummary(TypedDict):
     verdict_counts: dict[str, int]
     failure_category_counts: dict[str, int]
     best_experiments: list[dict]
+    tried_formulas: list[dict]        # recent {alpha_id, formula, verdict}, all verdicts
     explored_features: list[str]
     unexplored_features: list[str]
     trend_observations: list[str]

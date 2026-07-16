@@ -9,10 +9,15 @@ import json
 import os
 import re
 
+from core.decision import HARD_DUPLICATE_THRESHOLD
+from core.similarity import check_similarity
 from core.types import AlphaConfig, MemorySummary, ResearchSuggestion
 from core.formula_validator import (
     ALLOWED_FUNCTION_NAMES, FORMULA_CONSTRAINT, validate_alpha,
 )
+
+# Ask the LLM for spares so duplicate/invalid filtering still leaves n suggestions
+_EXTRA_SUGGESTIONS = 2
 
 _SYSTEM_PROMPT = (
     "You are a quantitative research director reviewing a portfolio of alpha factor experiments. "
@@ -54,34 +59,65 @@ def suggestion_to_config(
 def plan_next_research(
     store: "ExperimentStore",  # noqa: F821
     n: int = 3,
+    avoid_formulas: list[str] | None = None,
 ) -> list[ResearchSuggestion]:
     """Read all experiments from memory and suggest the next N research directions.
 
-    Tries DeepSeek first; fills remaining slots with rule-based suggestions on failure.
+    Tries DeepSeek first; fills remaining slots with rule-based suggestions on
+    failure. Every suggestion is pre-checked against the store so a known
+    duplicate never reaches the backtest pipeline (and never burns a bandit pull).
+
+    `avoid_formulas`: formulas already rejected as duplicates this session —
+    injected into the prompt so the LLM stops regenerating them.
     """
     from core.memory_analyzer import analyze_memory
 
     summary = analyze_memory(store)
 
     try:
-        suggestions = _llm_plan(summary, n)
+        suggestions = _llm_plan(summary, n, avoid_formulas)
     except Exception as exc:
         print(f"  [planner] LLM planning failed ({exc}), using rule-based fallback.")
         suggestions = []
 
-    # Fill remaining slots with rule-based suggestions
-    if len(suggestions) < n:
-        fallback = _rule_based_plan(summary, n - len(suggestions))
-        suggestions.extend(fallback)
+    unique = _drop_known_duplicates(suggestions, store)
 
-    return suggestions[:n]
+    # Fill remaining slots with rule-based suggestions (also duplicate-checked)
+    if len(unique) < n:
+        fallback = _rule_based_plan(summary, n - len(unique) + _EXTRA_SUGGESTIONS)
+        unique.extend(_drop_known_duplicates(fallback, store))
+
+    return unique[:n]
+
+
+def _drop_known_duplicates(
+    suggestions: list[ResearchSuggestion],
+    store: "ExperimentStore",  # noqa: F821
+) -> list[ResearchSuggestion]:
+    """Generation-time pre-check: drop suggestions that would duplicate-abort."""
+    unique: list[ResearchSuggestion] = []
+    for s in suggestions:
+        sim = check_similarity(
+            {"alpha_id": "plan_check", "formula": s["formula"], "features": s["features"]},
+            store, threshold=HARD_DUPLICATE_THRESHOLD,
+        )
+        if not sim["is_unique"]:
+            print(
+                f"  [planner] Dropping '{s['direction']}' — duplicate of "
+                f"'{sim['most_similar_id']}' (structural {sim['structural_similarity']:.0%})"
+            )
+            continue
+        unique.append(s)
+    return unique
 
 
 # ---------------------------------------------------------------------------
 # LLM path
 # ---------------------------------------------------------------------------
 
-def _llm_plan(summary: MemorySummary, n: int) -> list[ResearchSuggestion]:
+def _llm_plan(
+    summary: MemorySummary, n: int, avoid_formulas: list[str] | None = None
+) -> list[ResearchSuggestion]:
     from openai import OpenAI
 
     api_key = os.getenv("DEEPSEEK_API_KEY")
@@ -89,7 +125,8 @@ def _llm_plan(summary: MemorySummary, n: int) -> list[ResearchSuggestion]:
         raise ValueError("DEEPSEEK_API_KEY not set")
 
     client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
-    prompt = _build_plan_prompt(summary, n)
+    # Request spares so duplicate/invalid filtering still leaves n
+    prompt = _build_plan_prompt(summary, n + _EXTRA_SUGGESTIONS, avoid_formulas)
 
     response = client.chat.completions.create(
         model="deepseek-chat",
@@ -106,7 +143,21 @@ def _llm_plan(summary: MemorySummary, n: int) -> list[ResearchSuggestion]:
     return suggestions
 
 
-def _build_plan_prompt(summary: MemorySummary, n: int) -> str:
+def _avoid_lines(avoid_formulas: list[str] | None) -> str:
+    """Block listing formulas already rejected as duplicates this session."""
+    if not avoid_formulas:
+        return ""
+    lines = "\n".join(f"  - {f}" for f in avoid_formulas)
+    return (
+        "\nAlready proposed this session and REJECTED as duplicates — every "
+        "suggestion MUST be structurally different from ALL of these:\n"
+        f"{lines}\n"
+    )
+
+
+def _build_plan_prompt(
+    summary: MemorySummary, n: int, avoid_formulas: list[str] | None = None
+) -> str:
     vc = summary["verdict_counts"]
     status_line = (
         f"{summary['total_experiments']} total: "
@@ -126,6 +177,11 @@ def _build_plan_prompt(summary: MemorySummary, n: int) -> str:
         for e in summary["best_experiments"]
     ) or "  (none)"
 
+    tried_lines = "\n".join(
+        f"  [{t['verdict']}] {t['formula']}"
+        for t in summary["tried_formulas"]
+    ) or "  (none)"
+
     trend_lines = "\n".join(f"  - {obs}" for obs in summary["trend_observations"])
 
     explored = ", ".join(summary["explored_features"]) or "(none)"
@@ -138,14 +194,19 @@ Total: {status_line}
 Failure patterns: {failure_lines}
 Best experiments:
 {best_lines}
+Already-tested formulas (most recent last — ALL of these have been run):
+{tried_lines}
 Explored features: {explored}
 Unexplored features: {unexplored}
 Trend observations:
 {trend_lines}
-
+{_avoid_lines(avoid_formulas)}
 {FORMULA_CONSTRAINT}
 
 Suggest {n} NEW alpha research directions that are meaningfully different from what has been tried.
+CRITICAL: do NOT re-propose any already-tested formula above, nor a trivial variant of one
+(a sign flip, a re-weighting, or a thin wrapper like rank()/zscore() around the same expression) —
+duplicates are rejected without running and waste the research budget.
 Prioritize unexplored signal types (value, quality, growth, volatility, liquidity).
 Prefer SIMPLE formulas (<= 3 operator calls) — the scoring system explicitly penalizes
 formula complexity and rewards novelty vs. prior experiments, so a simple new idea

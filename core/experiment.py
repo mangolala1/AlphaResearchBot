@@ -1,8 +1,9 @@
 """Single-experiment pipeline — callable from the CLI wrapper and the loop runner.
 
 V4: verdicts come from the composite score (core.decision.score_alpha).
-Similarity is a graded novelty penalty; only near-exact duplicates
-(>= HARD_DUPLICATE_THRESHOLD) abort before the backtest.
+Similarity is a graded novelty penalty; only structural duplicates
+(exact sign-canonical match, or AST similarity >= HARD_DUPLICATE_THRESHOLD)
+abort before the backtest.
 """
 
 from __future__ import annotations
@@ -66,20 +67,27 @@ def run_single_experiment(
         )
     _log("  Validation passed.\n")
 
-    # ── Step 2: similarity — hard abort only at near-exact duplicates ────────
+    # ── Step 2: similarity — hard abort only at structural duplicates ────────
     _log("[ Step 2 ] Checking similarity against prior alphas...")
     sim = check_similarity(alpha, store, threshold=HARD_DUPLICATE_THRESHOLD)
     if not sim["is_unique"]:
-        _log(f"  Alpha is {sim['similarity_score']:.0%} similar to '{sim['most_similar_id']}'")
+        kind = "exact duplicate (sign-canonical)" if sim["is_exact_duplicate"] else "structural duplicate"
+        _log(f"  {kind}: {sim['structural_similarity']:.0%} vs '{sim['most_similar_id']}'")
         if not force:
-            _log("  Near-duplicate — aborting (use force=True / --force to run anyway).")
+            _log("  Aborting (use force=True / --force to run anyway).")
             return ExperimentOutcome(
                 status="duplicate", record=None, similarity=sim,
-                error=f"similarity {sim['similarity_score']:.2f} >= {HARD_DUPLICATE_THRESHOLD}",
+                error=(
+                    "exact canonical duplicate" if sim["is_exact_duplicate"]
+                    else f"structural similarity {sim['structural_similarity']:.2f} >= {HARD_DUPLICATE_THRESHOLD}"
+                ),
             )
         _log("  force set, continuing.\n")
     else:
-        _log(f"  Similarity {sim['similarity_score']:.0%} (novelty flows into the score).\n")
+        _log(
+            f"  Combined similarity {sim['similarity_score']:.0%} "
+            f"(structural max {sim['structural_similarity']:.0%}; novelty flows into the score).\n"
+        )
 
     # ── Step 3: backtest ──────────────────────────────────────────────────────
     _log("[ Step 3 ] Running backtest...")
@@ -138,12 +146,11 @@ def run_single_experiment(
         robustness_for_score,
         alpha.get("formula", ""),
         sim["similarity_score"],
-        portfolio_returns=backtest_result["portfolio_returns"],
     )
     sub = alpha_score.sub_scores
-    _log(f"  Score (directional): {alpha_score.total:.1f} / 100")
-    _log(f"  Signal Strength    : {alpha_score.signal_strength:.1f} / 100"
-         + ("  [inverted direction preferred]" if alpha_score.preferred_direction == -1 else ""))
+    _log(f"  Score (raw)          : {alpha_score.total:.1f} / 100")
+    _log(f"  Predictive magnitude : {alpha_score.predictive_magnitude:.1f} / 100")
+    _log(f"  Direction            : {alpha_score.direction_status}")
     _log(f"    performance   : {sub['performance']:.2f}")
     _log(f"    implementation: {sub['implementation']:.2f}")
     _log(f"    robustness    : {sub['robustness']:.2f}")
@@ -182,8 +189,9 @@ def run_single_experiment(
         failure_reason=alpha_score.failure_reason,
         reflection=reflection,
         score=alpha_score.total,
-        signal_strength=alpha_score.signal_strength,
-        preferred_direction=alpha_score.preferred_direction,
+        predictive_magnitude=alpha_score.predictive_magnitude,
+        direction_status=alpha_score.direction_status,
+        fatal=alpha_score.fatal,
         sub_scores=dict(alpha_score.sub_scores),
     )
     store.save_experiment(record)

@@ -11,7 +11,10 @@ from __future__ import annotations
 import random
 from typing import TYPE_CHECKING, Literal
 
-from core.memory_analyzer import effective_score
+from core.memory_analyzer import (
+    direction_evidence_stable, direction_status_of, effective_score,
+    record_is_fatal,
+)
 from core.types import ExperimentRecord
 
 if TYPE_CHECKING:
@@ -21,12 +24,33 @@ if TYPE_CHECKING:
 EXPLORE_ARM = "__explore__"
 MAX_PARENT_ARMS = 5          # top-K eligible parents by effective_score
 PARENT_SCORE_FLOOR = 35.0    # parents must be out of the failed band
+CONTRADICTED_PARENT_FLOOR = 50.0  # stricter bar for contradicted-direction parents
 COLD_START_MIN = 3           # force explore until store has >= this many experiments
 REWARD_HALF_RANGE = 25.0     # +/- this many score points maps reward to 1.0 / 0.0
 EXPLORE_PRIOR = (2.0, 1.0)   # optimistic — bootstraps exploration
 BASELINE_DEFAULT = 50.0      # explore baseline when the store is empty
 
-_ELIGIBLE_VERDICTS = {"promising", "revise", "revise_invert"}
+_ELIGIBLE_VERDICTS = {"promising", "revise"}
+
+
+def _is_eligible_parent(record: ExperimentRecord) -> bool:
+    """Two ways into the parent pool.
+
+    Normal path: a promising/revise verdict above the standard floor.
+    Contradicted path: the stated direction was wrong but the signal itself is
+    strong (predictive_magnitude above a stricter floor), non-fatal, and the
+    negative direction is consistent — a research branch worth mutating
+    structurally, not a verdict.
+    """
+    score = effective_score(record)
+    if record.get("verdict") in _ELIGIBLE_VERDICTS and score >= PARENT_SCORE_FLOOR:
+        return True
+    return (
+        direction_status_of(record) == "contradicted"
+        and not record_is_fatal(record)
+        and score >= CONTRADICTED_PARENT_FLOOR
+        and direction_evidence_stable(record)
+    )
 
 
 def _parent_prior(parent_score: float) -> tuple[float, float]:
@@ -46,11 +70,7 @@ class ThompsonScheduler:
     def eligible_parent_arms(self) -> list[str]:
         """Arm ids ("mutate:<alpha_id>") for the top-K eligible parents."""
         records = self._store.load_all()
-        eligible = [
-            r for r in records
-            if r.get("verdict") in _ELIGIBLE_VERDICTS
-            and effective_score(r) >= PARENT_SCORE_FLOOR
-        ]
+        eligible = [r for r in records if _is_eligible_parent(r)]
         eligible.sort(key=effective_score, reverse=True)
         return [f"mutate:{r['alpha_id']}" for r in eligible[:MAX_PARENT_ARMS]]
 
@@ -92,7 +112,7 @@ class ThompsonScheduler:
         parent_record: ExperimentRecord | None,
         outcome: "ExperimentOutcome",
     ) -> float:
-        """Continuous reward in [0, 1] based on signal-strength improvement."""
+        """Continuous reward in [0, 1] based on composite-score improvement."""
         if outcome.status != "completed" or outcome.record is None:
             return 0.0  # wasted pull — duplicates / validation / backtest errors
 
