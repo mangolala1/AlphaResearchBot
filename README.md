@@ -76,7 +76,7 @@ Clicking any node opens a side panel with the composite score and three tiers of
 - LLM generated reflection: observation, failure reason, possible explanation, next mutation
 
 Below is a sample graph of a few experiments, node color indicates verdict: red = failed, orange = revise, green = promising.
-![Example](/Users/floraguo/Desktop/AlphaResearchBot/Images/Screenshot 2026-07-16 at 16.30.01.png)
+![Example](Images%2FScreenshot%202026-07-16%20at%2016.30.01.png)
 
 ## Why This Matters
 
