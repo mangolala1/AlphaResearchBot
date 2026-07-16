@@ -233,23 +233,34 @@ Create a `.json` file anywhere (the `experiments/` folder is conventional) with 
 | `holding_period_days` | integer | Forward return window for IC calculation |
 
 
-## Quick Reference
+## Testing
 
 ```bash
-# Full loop: plan → save → run best → visualize
-python scripts/plan_next.py --n 3 --save
-python scripts/run_experiment.py --config experiments/plan_001_<name>.json
-python scripts/export_graph.py && open reports/research_graph.html
+# 1. Run a short loop against a brand-new database (file is created automatically)
+python scripts/run_loop.py --iterations 5 --db db/test_experiments.db
 
-# Mutate a failed experiment and run immediately
-python scripts/mutate_alpha.py --parent alpha_001 --run
+# 2. Export the graph from ONLY that database
+python scripts/export_graph.py --db db/test_experiments.db --output reports/test_graph.html
+open reports/test_graph.html
 
-# Run your own hand-crafted alpha
-python scripts/run_experiment.py --config experiments/my_alpha.json
+# 3. Cleanup when done, clears up both experiment records and bandit posteriors
+rm db/test_experiments.db
 
-# Re-run with fresh data (ignore cache)
-python scripts/run_experiment.py --config experiments/my_alpha.json --no-cache
+# (Optional) Created json files are harmless to keep
+rm experiments/loop_*.json
 
-# Force-run a near-duplicate alpha
-python scripts/run_experiment.py --config experiments/my_alpha.json --force
+# 4. Alternative (If wanting the existing experiements as bandit parents/memory)
+cp db/experiments.db db/test_experiments.db                                                  
+python scripts/run_loop.py --iterations 5 --db db/test_experiments.db                        
+# note the batch id printed at loop start, e.g. loop_20260706_120000                         
+python scripts/export_graph.py --db db/test_experiments.db --filter-batch loop_20260706_120000 --output reports/test_graph.html 
+#  Here --filter-batch (existing flag in scripts/export_graph.py) shows only the loop session's ring; 
+#  --include-ancestors to also show the parents that mutations branched from.
 ```
+
+What to look for:
+- **Scoring output**: the `[ Step 5 ] Composite scoring` block prints the composite score, predictive magnitude, direction status, and all five sub-scores; novelty ≈ 0.00 on a rerun (it's a duplicate of itself) and should be named the weakest component.
+- **Loop output**: each iteration logs the scheduler's pick and the outcome, e.g. `[2/5] mutate:alpha_x → child | score 58.1 (parent 68.4) | reward 0.29 | revise`. Reward > 0.5 means the child improved on its parent; duplicates earn 0.0. The end-of-run table shows per-arm Beta posteriors. Ctrl-C is safe — all state persists per iteration, and the next loop run resumes from the saved posteriors.
+- **Graph**: the loop session appears as its own ring; nodes are labeled with their composite score; clicking one shows the Composite Score panel, with a "direction contradicted" badge on signals that ran opposite to their hypothesis.
+
+Tunables live as module constants at the top of `core/decision.py` (weights, verdict bands, fatal gates) and `core/scheduler.py` (priors, parent floor, contradicted-parent floor, top-K, reward scale). A health check worth watching early on: if the explore arm never wins, make `EXPLORE_PRIOR` more optimistic.

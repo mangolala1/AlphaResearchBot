@@ -25,8 +25,9 @@ CREATE TABLE IF NOT EXISTS experiments (
     failure_reason      TEXT,
     reflection          TEXT,
     score               REAL,
-    signal_strength     REAL,
-    preferred_direction INTEGER,
+    predictive_magnitude REAL,
+    direction_status    TEXT,
+    fatal               INTEGER,
     sub_scores          TEXT
 );
 """
@@ -58,9 +59,10 @@ class ExperimentStore:
             for ddl in (
                 "ALTER TABLE experiments ADD COLUMN batch_id TEXT",
                 "ALTER TABLE experiments ADD COLUMN score REAL",
-                "ALTER TABLE experiments ADD COLUMN signal_strength REAL",
-                "ALTER TABLE experiments ADD COLUMN preferred_direction INTEGER",
                 "ALTER TABLE experiments ADD COLUMN sub_scores TEXT",
+                "ALTER TABLE experiments ADD COLUMN predictive_magnitude REAL",
+                "ALTER TABLE experiments ADD COLUMN direction_status TEXT",
+                "ALTER TABLE experiments ADD COLUMN fatal INTEGER",
             ):
                 try:
                     conn.execute(ddl)
@@ -85,8 +87,9 @@ class ExperimentStore:
             record.get("failure_reason"),
             record.get("reflection", ""),
             record.get("score"),
-            record.get("signal_strength"),
-            record.get("preferred_direction"),
+            record.get("predictive_magnitude"),
+            record.get("direction_status"),
+            int(record["fatal"]) if record.get("fatal") is not None else None,
             json.dumps(record.get("sub_scores")) if record.get("sub_scores") else None,
         )
         with self._connect() as conn:
@@ -95,8 +98,8 @@ class ExperimentStore:
                 INSERT OR REPLACE INTO experiments
                 (alpha_id, parent_id, batch_id, timestamp, hypothesis, formula, features,
                  mutation, config, metrics, robustness, verdict, failure_reason, reflection,
-                 score, signal_strength, preferred_direction, sub_scores)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 score, predictive_magnitude, direction_status, fatal, sub_scores)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 row,
             )
@@ -150,6 +153,11 @@ class ExperimentStore:
 
     @staticmethod
     def _row_to_record(row: sqlite3.Row) -> ExperimentRecord:
+        # Legacy rows: "revise_invert" was retired as a verdict — treat as "revise"
+        # so old databases keep working with the scheduler and visualization.
+        verdict = row["verdict"]
+        if verdict == "revise_invert":
+            verdict = "revise"
         return ExperimentRecord(
             alpha_id=row["alpha_id"],
             parent_id=row["parent_id"],
@@ -162,11 +170,12 @@ class ExperimentStore:
             config=json.loads(row["config"]),
             metrics=json.loads(row["metrics"]),
             robustness=json.loads(row["robustness"]),
-            verdict=row["verdict"],
+            verdict=verdict,
             failure_reason=row["failure_reason"],
             reflection=row["reflection"],
             score=row["score"],
-            signal_strength=row["signal_strength"],
-            preferred_direction=row["preferred_direction"],
+            predictive_magnitude=row["predictive_magnitude"],
+            direction_status=row["direction_status"],
+            fatal=bool(row["fatal"]) if row["fatal"] is not None else None,
             sub_scores=json.loads(row["sub_scores"]) if row["sub_scores"] else None,
         )

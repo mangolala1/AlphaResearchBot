@@ -82,10 +82,14 @@ def main() -> None:
         }
 
     if args.filter_top is not None:
-        # Rank by composite score when available (>= 0), Sharpe as fallback;
-        # scored nodes always outrank unscored pre-V4 nodes.
+        # Rank by predictive magnitude when available (>= 0), matching parent-pool
+        # semantics; directional score then Sharpe as fallbacks. Scored nodes
+        # always outrank unscored pre-V4 nodes.
         def _rank_key(n):
-            score = g.nodes[n].get("signal_strength", -1.0)
+            magnitude = g.nodes[n].get("predictive_magnitude", -1.0)
+            if magnitude is not None and magnitude >= 0:
+                return (1, magnitude)
+            score = g.nodes[n].get("score", -1.0)
             if score is None or score < 0:
                 return (0, g.nodes[n].get("Sharpe", 0.0))
             return (1, score)

@@ -12,9 +12,14 @@ _WINSOR_HIGH = 0.99
 _DATA_DIR = Path("data")
 
 
+# Bump when the processing semantics change so stale caches are never loaded.
+# raw_v2: fundamentals kept raw — winsorise/standardise moved post-signal.
+_PIPELINE_VERSION = "raw_v2"
+
+
 def processed_path(statement: str, start_date: str, end_date: str) -> Path:
     """Return the data/ cache path for a processed statement parquet."""
-    key = f"processed_{statement}|{start_date}|{end_date}"
+    key = f"processed_{statement}|{start_date}|{end_date}|{_PIPELINE_VERSION}"
     digest = hashlib.sha256(key.encode()).hexdigest()[:16]
     return _DATA_DIR / f"processed_{statement}_{digest}.parquet"
 
@@ -66,29 +71,35 @@ _COLUMN_RENAMES: dict[str, str] = {
 def process(
     df: pd.DataFrame,
     value_cols: list[str] | None = None,
-    winsorise: bool = True,
-    standardise: bool = True,
+    winsorise: bool = False,
+    standardise: bool = False,
     ffill_daily: bool = True,
 ) -> pd.DataFrame:
-    """Rename, clean, winsorise, standardise, and forward-fill a data panel.
+    """Rename, clean, and forward-fill a data panel — values stay RAW by default.
+
+    Signals are computed from raw values; cross-sectional winsorisation and
+    standardisation are applied once, AFTER formula evaluation, to the
+    resulting signal (see signal_calculation.compute_signal). Scaling raw
+    columns here would make ratios like CFO_LTM / REVENUE_LTM divide two
+    z-scores, which is meaningless.
 
     Steps:
       1. Apply known SimFin → standardised column renames
       2. Sanitise any remaining non-standard column names (spaces/special chars → underscores, uppercased)
       3. Normalise to (DATE, TICKER) MultiIndex
       4. Drop rows where all value columns are NaN
-      5. Cross-sectional winsorisation: clip at 1%/99% across stocks per date
-      6. Cross-sectional standardisation: z-score across stocks per date
+      5. (opt-in) Cross-sectional winsorisation: clip at 1%/99% across stocks per date
+      6. (opt-in) Cross-sectional standardisation: z-score across stocks per date
       7. Drop rows with any remaining NaN in value columns
       8. Forward-fill to day frequency within each ticker
 
     Args:
         df:          Long-format DataFrame with TICKER and DATE columns (or
                      a (DATE, TICKER) MultiIndex DataFrame).
-        value_cols:  Columns to winsorise/standardise after renaming. Defaults to
+        value_cols:  Columns to treat as values after renaming. Defaults to
                      all non-metadata, non-price columns present after renaming.
-        winsorise:   Apply cross-sectional winsorisation.
-        standardise: Apply cross-sectional z-score standardisation.
+        winsorise:   Apply cross-sectional winsorisation per column (off by default).
+        standardise: Apply cross-sectional z-score per column (off by default).
         ffill_daily: Forward-fill processed values to business-day frequency.
 
     Returns:

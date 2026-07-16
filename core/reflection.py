@@ -76,23 +76,14 @@ def _score_block(alpha_score: AlphaScore | None) -> str:
     if alpha_score is None:
         return ""
     sub = alpha_score.sub_scores
-    direction = "as stated (+1)" if alpha_score.preferred_direction == 1 else "INVERTED (-1)"
-    block = f"""
+    return f"""
 Composite Score:
-- Directional score (hypothesis as stated): {alpha_score.total:.1f} / 100
-- Signal strength (best direction): {alpha_score.signal_strength:.1f} / 100
-- Preferred direction: {direction}
+- Score (hypothesis as stated): {alpha_score.total:.1f} / 100
+- Predictive magnitude (direction-blind): {alpha_score.predictive_magnitude:.1f} / 100
+- Direction status: {alpha_score.direction_status}
 - Sub-scores: performance {sub['performance']:.2f} | implementation {sub['implementation']:.2f} | robustness {sub['robustness']:.2f} | simplicity {sub['simplicity']:.2f} | novelty {sub['novelty']:.2f}
 The score rewards simplicity and novelty; sub-scores below 0.4 are the priority to fix.
 """
-    if alpha_score.verdict == "revise_invert":
-        block += (
-            "IMPORTANT: The signal direction is INVERTED — the hypothesis as stated is wrong. "
-            "In 'Possible Explanation', restate the economic hypothesis in the OPPOSITE direction "
-            "and explain why the intuition was backwards. The Next Mutation should flip the "
-            "formula sign, not add complexity.\n"
-        )
-    return block
 
 
 def _build_prompt(
@@ -109,6 +100,8 @@ Observation: <1-2 sentences on what the numbers show>
 Failure Reason: {failure_reason if failure_reason else "N/A"}
 Possible Explanation: <1-2 sentences on why the alpha performed this way>
 Next Mutation: <1 concrete, specific change to the formula or config to try next>
+
+IMPORTANT: NEVER suggest a sign-flip-only mutation (multiplying the formula by -1). The backtest already measures both directions; a sign flip adds no information and will be rejected as a near-duplicate. If the direction was contradicted, restate the economic hypothesis in the opposite direction in 'Possible Explanation', but the Next Mutation must be a structurally different formula.
 {_score_block(alpha_score)}
 Backtest details:
 - Formula: {alpha.get("formula")}  [execution]
@@ -155,21 +148,6 @@ def _rule_based_reflection(
     possible_explanation = _possible_explanation(features, formula, metrics, robustness)
     failure_line = f"Failure Reason: {failure_reason}" if failure_reason else "Failure Reason: N/A"
     next_mutation = _next_mutation(alpha, metrics, verdict)
-
-    if verdict == "revise_invert":
-        observation = (
-            f"Signal is predictive but INVERTED: directional score "
-            f"{alpha_score.total:.1f} vs signal strength {alpha_score.signal_strength:.1f}. "
-            if alpha_score else "Signal is predictive but the hypothesis direction is inverted. "
-        ) + f"Sharpe {metrics['Sharpe']:.2f}, ICIR {metrics['ICIR']:.2f} as stated."
-        possible_explanation = (
-            "The economic intuition was backwards — the effect exists but in the opposite "
-            "direction. The hypothesis should be restated with the opposite sign."
-        )
-        next_mutation = (
-            "Multiply the formula by -1 and restate the hypothesis in the opposite "
-            "direction. Do not add complexity."
-        )
 
     return (
         f"{_DISCLAIMER}\n\n"

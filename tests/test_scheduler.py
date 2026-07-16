@@ -19,20 +19,28 @@ def store(tmp_path):
     return ExperimentStore(db_path=str(tmp_path / "test.db"))
 
 
-def _fake_record(alpha_id, verdict="revise", strength=50.0, parent_id=None):
+def _fake_record(alpha_id, verdict="revise", strength=50.0, parent_id=None,
+                 metrics=None, robustness=None, direction_status="supported",
+                 fatal=False):
     return dict(
         alpha_id=alpha_id, parent_id=parent_id, batch_id="b1",
         timestamp="2026-07-05T00:00:00", hypothesis="h", formula="rank(REVENUE_LTM)",
         features=[], mutation="", config={},
-        metrics=dict(IC_mean=0.02, ICIR=0.3, Sharpe=0.5, deflated_sharpe=0.4,
-                     monotonicity=0.3, turnover=0.4, max_drawdown=-0.2,
-                     Q5_Q1_return=0.05, noise_risk="low"),
-        robustness=dict(sector_stability={}, subperiod_stability=0.5,
-                        market_regime_sharpe={}, placebo_score=0.5),
+        metrics=metrics or dict(IC_mean=0.02, ICIR=0.3, Sharpe=0.5, deflated_sharpe=0.4,
+                                monotonicity=0.3, turnover=0.4, max_drawdown=-0.2,
+                                Q5_Q1_return=0.05, noise_risk="low"),
+        robustness=robustness or dict(sector_stability={}, subperiod_stability=0.5,
+                                      market_regime_sharpe={}, placebo_score=0.5),
         verdict=verdict, failure_reason=None, reflection="",
-        score=strength, signal_strength=strength, preferred_direction=1,
-        sub_scores=None,
+        score=strength, predictive_magnitude=strength,
+        direction_status=direction_status, fatal=fatal, sub_scores=None,
     )
+
+
+def _contradicted_metrics(ic=-0.03, icir=-0.6, sharpe=-0.9):
+    return dict(IC_mean=ic, ICIR=icir, Sharpe=sharpe, deflated_sharpe=sharpe * 0.8,
+                monotonicity=-0.3, turnover=0.3, max_drawdown=-0.2,
+                Q5_Q1_return=-0.03, noise_risk="medium")
 
 
 def test_cold_start_forces_explore(store):
@@ -64,12 +72,55 @@ def test_update_clips_reward(store):
 
 def test_eligibility_excludes_failed_and_low_scores(store):
     store.save_experiment(_fake_record("good", "promising", 80.0))
-    store.save_experiment(_fake_record("inverted", "revise_invert", 60.0))
+    store.save_experiment(_fake_record("okay", "revise", 60.0))
     store.save_experiment(_fake_record("weak", "revise", 20.0))     # below floor
-    store.save_experiment(_fake_record("dead", "failed", 70.0))     # failed verdict
+    store.save_experiment(_fake_record("dead", "failed", 70.0))     # failed + supported
     sched = ThompsonScheduler(store)
     arms = sched.eligible_parent_arms()
-    assert arms == ["mutate:good", "mutate:inverted"]
+    assert arms == ["mutate:good", "mutate:okay"]
+
+
+def test_contradicted_strong_stable_signal_is_eligible(store):
+    store.save_experiment(_fake_record(
+        "flipped", "failed", 60.0,
+        metrics=_contradicted_metrics(),           # ICIR -0.6 → stable evidence
+        direction_status="contradicted",
+    ))
+    sched = ThompsonScheduler(store)
+    assert sched.eligible_parent_arms() == ["mutate:flipped"]
+
+
+def test_contradicted_below_stricter_floor_is_excluded(store):
+    store.save_experiment(_fake_record(
+        "flipped_weak", "failed", 45.0,            # ≥ 35 but < 50
+        metrics=_contradicted_metrics(),
+        direction_status="contradicted",
+    ))
+    sched = ThompsonScheduler(store)
+    assert sched.eligible_parent_arms() == []
+
+
+def test_contradicted_fatal_is_excluded(store):
+    store.save_experiment(_fake_record(
+        "flipped_fatal", "failed", 60.0,
+        metrics=_contradicted_metrics(),
+        direction_status="contradicted", fatal=True,
+    ))
+    sched = ThompsonScheduler(store)
+    assert sched.eligible_parent_arms() == []
+
+
+def test_contradicted_unstable_evidence_is_excluded(store):
+    # ICIR near zero and low subperiod stability — one noisy negative draw
+    store.save_experiment(_fake_record(
+        "flipped_noisy", "failed", 60.0,
+        metrics=_contradicted_metrics(icir=-0.02),
+        robustness=dict(sector_stability={}, subperiod_stability=0.1,
+                        market_regime_sharpe={}, placebo_score=0.5),
+        direction_status="contradicted",
+    ))
+    sched = ThompsonScheduler(store)
+    assert sched.eligible_parent_arms() == []
 
 
 def test_convergence_to_better_arm(store):

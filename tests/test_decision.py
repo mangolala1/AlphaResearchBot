@@ -5,7 +5,6 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import numpy as np
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -80,7 +79,6 @@ def test_dead_signal_is_fatal():
     s = score_alpha(m, NEUTRAL_ROBUSTNESS, SIMPLE_FORMULA, 0.3)
     assert s.fatal
     assert s.verdict == "failed"
-    assert s.signal_strength <= 25.0
     assert "dead signal" in s.failure_reason
 
 
@@ -91,41 +89,49 @@ def test_catastrophic_drawdown_is_fatal():
     assert s.verdict == "failed"
 
 
-# ── Direction separation ─────────────────────────────────────────────────────
+# ── Direction handling ────────────────────────────────────────────────────────
 
-def _contrarian_returns(n=36, seed=0):
-    """Consistently negative long-short returns — a strong inverted signal."""
-    rng = np.random.default_rng(seed)
-    return list(-np.abs(rng.normal(0.02, 0.008, n)))
+def test_contrarian_alpha_fails_with_direction_note():
+    """A real-but-inverted signal is not a separate outcome — it fails with a note."""
+    m = make_metrics(ic=-0.04, icir=-0.9, sharpe=-1.4, dsh=-1.2, mono=-0.7, dd=-0.3)
+    s = score_alpha(m, NEUTRAL_ROBUSTNESS, SIMPLE_FORMULA, 0.2)
+    assert not s.fatal  # strong |Sharpe| — the bidirectional dead-signal gate passes
+    assert s.verdict == "failed"
+    assert s.direction_status == "contradicted"
+    assert s.predictive_magnitude > s.total  # magnitude sees the signal, total doesn't
+    assert "direction contradicted" in s.failure_reason
+    assert "dead signal" not in s.failure_reason
 
 
-def test_contrarian_alpha_is_revise_invert_not_failed():
+def test_contrarian_with_catastrophic_drawdown_is_fatal():
     m = make_metrics(ic=-0.04, icir=-0.9, sharpe=-1.4, dsh=-1.2, mono=-0.7, dd=-0.5)
-    s = score_alpha(m, NEUTRAL_ROBUSTNESS, SIMPLE_FORMULA, 0.2,
-                    portfolio_returns=_contrarian_returns())
-    assert not s.fatal  # NOT killed despite dd=-0.5 as stated: preferred direction differs
-    assert s.preferred_direction == -1
-    assert s.verdict == "revise_invert"
-    assert s.signal_strength > s.total  # strength rescued by the inverted branch
-    assert "flip the formula sign" in s.failure_reason
-    assert "restate the hypothesis" in s.failure_reason
+    s = score_alpha(m, NEUTRAL_ROBUSTNESS, SIMPLE_FORMULA, 0.2)
+    assert s.fatal
+    assert s.verdict == "failed"
+    assert s.direction_status == "contradicted"
+    assert "direction contradicted" in s.failure_reason  # note survives the fatal gate
 
 
-def test_strong_positive_alpha_keeps_direction():
+def test_strong_positive_alpha_is_supported():
     m = make_metrics(ic=0.06, icir=1.2, sharpe=1.8, dsh=1.5, mono=0.9, to=0.2, dd=-0.08)
-    rng = np.random.default_rng(1)
-    rets = list(np.abs(rng.normal(0.02, 0.008, 36)))
-    s = score_alpha(m, NEUTRAL_ROBUSTNESS, SIMPLE_FORMULA, 0.2, portfolio_returns=rets)
-    assert s.preferred_direction == 1
-    assert s.signal_strength == s.total
+    s = score_alpha(m, NEUTRAL_ROBUSTNESS, SIMPLE_FORMULA, 0.2)
     assert s.verdict == "promising"
+    assert s.failure_reason is None
+    assert s.direction_status == "supported"
+    assert s.predictive_magnitude == s.total  # all-positive metrics: abs is identity
 
 
-def test_no_returns_means_directional_only():
-    m = make_metrics(ic=-0.04, icir=-0.9, sharpe=-1.4, dsh=-1.2, mono=-0.7)
-    s = score_alpha(m, NEUTRAL_ROBUSTNESS, SIMPLE_FORMULA, 0.2, portfolio_returns=None)
-    assert s.preferred_direction == 1
-    assert s.signal_strength == s.total
+def test_mixed_signs_are_uncertain():
+    m = make_metrics(ic=0.03, sharpe=-0.6)
+    s = score_alpha(m, NEUTRAL_ROBUSTNESS, SIMPLE_FORMULA, 0.2)
+    assert s.direction_status == "uncertain"
+    assert "direction contradicted" not in (s.failure_reason or "")
+
+
+def test_dead_signal_is_uncertain():
+    m = make_metrics(ic=0.001, sharpe=0.05, icir=0.01, mono=0.0)
+    s = score_alpha(m, NEUTRAL_ROBUSTNESS, SIMPLE_FORMULA, 0.3)
+    assert s.direction_status == "uncertain"
 
 
 # ── Verdict bands ─────────────────────────────────────────────────────────────
@@ -134,7 +140,7 @@ def test_all_soft_thresholds_lands_in_revise():
     m = make_metrics(ic=IC_MEAN_SOFT, icir=ICIR_SOFT, sharpe=SHARPE_SOFT,
                      dsh=SHARPE_SOFT, mono=MONO_SOFT, to=0.5, dd=-0.25)
     s = score_alpha(m, NEUTRAL_ROBUSTNESS, SIMPLE_FORMULA, 0.3)
-    assert REVISE_MIN <= s.signal_strength < PROMISING_MIN
+    assert REVISE_MIN <= s.total < PROMISING_MIN
     assert s.verdict == "revise"
 
 
@@ -143,7 +149,7 @@ def test_all_strong_is_promising():
     rob = dict(sector_stability={}, subperiod_stability=0.8,
                market_regime_sharpe={"bull": 1.5, "bear": 0.8}, placebo_score=0.9)
     s = score_alpha(m, rob, SIMPLE_FORMULA, 0.1)
-    assert s.signal_strength >= PROMISING_MIN
+    assert s.total >= PROMISING_MIN
     assert s.verdict == "promising"
     assert s.failure_reason is None
 

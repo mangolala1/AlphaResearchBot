@@ -35,11 +35,11 @@ class ResearchGraph:
             Sharpe=metrics.get("Sharpe", 0.0),
             Q5_Q1_return=metrics.get("Q5_Q1_return", 0.0),
             score=record.get("score") if record.get("score") is not None else -1.0,
-            signal_strength=(
-                record.get("signal_strength")
-                if record.get("signal_strength") is not None else -1.0
+            predictive_magnitude=(
+                record.get("predictive_magnitude")
+                if record.get("predictive_magnitude") is not None else -1.0
             ),
-            preferred_direction=record.get("preferred_direction") or 0,
+            direction_status=record.get("direction_status") or "",
             sub_scores=record.get("sub_scores") or {},
             ICIR=metrics.get("ICIR", 0.0),
             IC_mean=metrics.get("IC_mean", 0.0),

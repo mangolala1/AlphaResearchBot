@@ -34,13 +34,14 @@ def run_backtest(
 
     _DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Process and cache income statement
+    # Process and cache income statement — values stay raw; the signal is
+    # winsorised + standardised after formula evaluation (compute_signal).
     income_path = processed_path("income", start_date, end_date)
     if not no_cache and income_path.exists():
         # print(f"[Backtest] Loading processed income from {income_path}")
         processed_income = pd.read_parquet(income_path)
     else:
-        processed_income = process_data(income_ttm_df)
+        processed_income = process_data(income_ttm_df, winsorise=False, standardise=False)
         processed_income.to_parquet(income_path)
         print(f"[Backtest] Saved processed income to {income_path}")
 
@@ -50,7 +51,7 @@ def run_backtest(
         # print(f"[Backtest] Loading processed cashflow from {cashflow_path}")
         processed_cashflow = pd.read_parquet(cashflow_path)
     else:
-        processed_cashflow = process_data(cashflow_ttm_df)
+        processed_cashflow = process_data(cashflow_ttm_df, winsorise=False, standardise=False)
         processed_cashflow.to_parquet(cashflow_path)
         print(f"[Backtest] Saved processed cashflow to {cashflow_path}")
 

@@ -71,6 +71,10 @@ def main() -> None:
 
     consecutive_failures = 0
     results: list[str] = []
+    # Formulas rejected as duplicates this session — fed back into the next
+    # generation prompt so the LLM stops regenerating them. Keyed by parent_id
+    # for mutations, EXPLORE_ARM for planner suggestions.
+    rejected_formulas: dict[str, list[str]] = {}
 
     try:
         for i in range(1, args.iterations + 1):
@@ -84,7 +88,10 @@ def main() -> None:
             parent_record = None
             try:
                 if action == "explore":
-                    suggestions = plan_next_research(store, n=1)
+                    suggestions = plan_next_research(
+                        store, n=1,
+                        avoid_formulas=rejected_formulas.get(EXPLORE_ARM),
+                    )
                     if not suggestions:
                         raise RuntimeError("planner produced no suggestions")
                     s = suggestions[0]
@@ -94,7 +101,10 @@ def main() -> None:
                     config = suggestion_to_config(s, alpha_id, batch_id, base)
                 else:
                     parent_record = store.load_by_id(parent_id)
-                    config = generate_mutation(parent_id, store)
+                    config = generate_mutation(
+                        parent_id, store,
+                        avoid_formulas=rejected_formulas.get(parent_id),
+                    )
                     config["batch_id"] = batch_id
             except Exception as exc:
                 print(f"  Config generation failed: {exc}")
@@ -134,6 +144,11 @@ def main() -> None:
                 )
             else:
                 consecutive_failures += 1
+                if outcome.status == "duplicate":
+                    key = parent_id if action == "mutate" else EXPLORE_ARM
+                    rejected_formulas.setdefault(key, []).append(
+                        config.get("formula", "")
+                    )
                 line = f"[{i}] {arm_id} → {outcome.status} | reward {reward:.2f}"
             print(f"\n  {line}")
             results.append(line)
